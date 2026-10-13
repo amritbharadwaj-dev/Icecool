@@ -31,11 +31,15 @@ jobs:
         yes | sdkmanager --licenses
         sdkmanager "platforms;android-34" "build-tools;34.0.0"
 
-    - name: Install Gradle & Build
+    - name: Download & Setup Modern Gradle 8.5
       run: |
-        sudo apt-get update
-        sudo apt-get install -y gradle
-        gradle :app:assembleDebug
+        wget -q https://services.gradle.org/distributions/gradle-8.5-bin.zip -O gradle.zip
+        unzip -q gradle.zip
+        sudo mv gradle-8.5 /opt/gradle
+        echo "/opt/gradle/bin" >> $GITHUB_PATH
+
+    - name: Build Debug APK
+      run: gradle :app:assembleDebug
 
     - name: Upload APK Artifact
       uses: actions/upload-artifact@v4
