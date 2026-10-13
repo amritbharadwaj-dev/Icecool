@@ -33,6 +33,7 @@ public class MainActivity extends AppCompatActivity {
     private TabManager tabManager;
     private View customView;
     private WebChromeClient.CustomViewCallback customViewCallback;
+    private int currentZoomLevel = 100;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -49,13 +50,11 @@ public class MainActivity extends AppCompatActivity {
 
         checkPermissions();
 
-        // Top Navigation Listeners
         findViewById(R.id.btnHomeNav).setOnClickListener(v -> navigateHome());
         findViewById(R.id.btnRefresh).setOnClickListener(v -> refreshCurrentTab());
-        findViewById(R.id.btnMenu).setOnClickListener(v -> showRightSidePopupMenu(v));
+        findViewById(R.id.btnMenu).setOnClickListener(this::showChromePopupMenu);
         btnTabCounter.setOnClickListener(v -> showTabSwitcherDialog());
 
-        // Top Search Action
         etSearchUrl.setOnEditorActionListener((v, actionId, event) -> {
             if (actionId == EditorInfo.IME_ACTION_SEARCH || (event != null && event.getKeyCode() == KeyEvent.KEYCODE_ENTER)) {
                 String query = etSearchUrl.getText().toString().trim();
@@ -65,7 +64,6 @@ public class MainActivity extends AppCompatActivity {
             return false;
         });
 
-        // Home Search Action
         etHomeSearch.setOnEditorActionListener((v, actionId, event) -> {
             if (actionId == EditorInfo.IME_ACTION_SEARCH || (event != null && event.getKeyCode() == KeyEvent.KEYCODE_ENTER)) {
                 String query = etHomeSearch.getText().toString().trim();
@@ -75,7 +73,6 @@ public class MainActivity extends AppCompatActivity {
             return false;
         });
 
-        // Shortcuts
         findViewById(R.id.btnYoutube).setOnClickListener(v -> loadUrlInNewOrCurrentTab("https://www.youtube.com"));
         findViewById(R.id.btnInstagram).setOnClickListener(v -> loadUrlInNewOrCurrentTab("https://www.instagram.com"));
         findViewById(R.id.btnFacebook).setOnClickListener(v -> loadUrlInNewOrCurrentTab("https://www.facebook.com"));
@@ -139,7 +136,6 @@ public class MainActivity extends AppCompatActivity {
         webView.setWebViewClient(new WebViewClient() {
             @Override
             public boolean shouldOverrideUrlLoading(WebView view, String url) {
-                // Open clicked links in a new tab automatically like Chrome
                 createNewTab(url);
                 return true;
             }
@@ -158,7 +154,6 @@ public class MainActivity extends AppCompatActivity {
                 request.grant(request.getResources());
             }
 
-            // Full-screen Video Support (Fixes full screen video playback like YouTube)
             @Override
             public void onShowCustomView(View view, CustomViewCallback callback) {
                 if (customView != null) {
@@ -244,12 +239,12 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
-    // Chrome-style Right Side Popup Menu
-    private void showRightSidePopupMenu(View anchor) {
+    private void showChromePopupMenu(View anchor) {
         PopupMenu popup = new PopupMenu(this, anchor);
         popup.getMenu().add("New tab");
         popup.getMenu().add("Close all tabs");
-        popup.getMenu().add("Clear all data & cookies");
+        popup.getMenu().add("Delete all data & cookies");
+        popup.getMenu().add("Zoom: " + currentZoomLevel + "% (- / +)");
 
         popup.setOnMenuItemClickListener(item -> {
             String title = item.getTitle().toString();
@@ -258,12 +253,42 @@ public class MainActivity extends AppCompatActivity {
             } else if (title.equals("Close all tabs")) {
                 tabManager.clearAllTabs();
                 createNewTab("");
-            } else if (title.equals("Clear all data & cookies")) {
+            } else if (title.equals("Delete all data & cookies")) {
                 clearAllDataAndCookies();
+            } else if (title.startsWith("Zoom")) {
+                showZoomControlDialog();
             }
             return true;
         });
         popup.show();
+    }
+
+    private void showZoomControlDialog() {
+        new AlertDialog.Builder(this)
+                .setTitle("Zoom Controls (" + currentZoomLevel + "%)")
+                .setPositiveButton("Zoom In (+)", (d, w) -> {
+                    if (currentZoomLevel < 200) currentZoomLevel += 25;
+                    applyZoom();
+                })
+                .setNegativeButton("Zoom Out (-)", (d, w) -> {
+                    if (currentZoomLevel > 50) currentZoomLevel -= 25;
+                    applyZoom();
+                })
+                .setNeutralButton("Reset (100%)", (d, w) -> {
+                    currentZoomLevel = 100;
+                    applyZoom();
+                })
+                .show();
+    }
+
+    private void applyZoom() {
+        if (!tabManager.getTabs().isEmpty()) {
+            TabManager.TabItem currentTab = tabManager.getTabs().get(tabManager.getActiveTabIdx());
+            if (currentTab.webView != null) {
+                currentTab.webView.setZoomLevel((currentZoomLevel / 100.0) * 3);
+            }
+        }
+        Toast.makeText(this, "Zoom set to " + currentZoomLevel + "%", Toast.LENGTH_SHORT).show();
     }
 
     private void clearAllDataAndCookies() {
@@ -277,7 +302,7 @@ public class MainActivity extends AppCompatActivity {
                 tab.webView.clearFormData();
             }
         }
-        Toast.makeText(this, "All Cookies & Data Cleared Successfully!", Toast.LENGTH_SHORT).show();
+        Toast.makeText(this, "All Cookies & Data Cleared!", Toast.LENGTH_SHORT).show();
     }
 
     private void showTabSwitcherDialog() {
@@ -288,13 +313,13 @@ public class MainActivity extends AppCompatActivity {
         }
 
         new AlertDialog.Builder(this)
-                .setTitle("Tabs (" + tabs.size() + "/10)")
+                .setTitle("Active Tabs (" + tabs.size() + "/10)")
                 .setItems(titles, (dialog, which) -> {
                     tabManager.setActiveTabIdx(which);
                     renderActiveTab();
                 })
                 .setPositiveButton("+ New Tab", (dialog, which) -> createNewTab(""))
-                .setNegativeButton("Close Current Tab", (dialog, which) -> {
+                .setNegativeButton("Close Tab", (dialog, which) -> {
                     tabManager.removeTab(tabManager.getActiveTabIdx());
                     if (tabManager.getTabs().isEmpty()) {
                         createNewTab("");
@@ -308,7 +333,6 @@ public class MainActivity extends AppCompatActivity {
     @Override
     public void onBackPressed() {
         if (customView != null) {
-            // Exit full screen video if playing
             WebChromeClient client = new WebChromeClient();
             client.onHideCustomView();
             return;
