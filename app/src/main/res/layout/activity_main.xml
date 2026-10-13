@@ -1,0 +1,106 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:gravity="center_horizontal"
+    android:background="#121212"
+    android:padding="20dp">
+
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="Ice Cool"
+        android:textSize="36sp"
+        android:textStyle="bold"
+        android:textColor="#00E5FF"
+        android:layout_marginTop="60dp"
+        android:layout_marginBottom="30dp"/>
+
+    <!-- Google Search Bar container -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="50dp"
+        android:background="#1E1E1E"
+        android:orientation="horizontal"
+        android:gravity="center_vertical"
+        android:paddingHorizontal="15dp"
+        android:layout_marginBottom="30dp">
+
+        <EditText
+            android:id="@+id/etSearch"
+            android:layout_width="0dp"
+            android:layout_height="match_parent"
+            android:layout_weight="1"
+            android:background="@null"
+            android:hint="Search Google or type URL"
+            android:textColor="#FFFFFF"
+            android:textColorHint="#888888"
+            android:textSize="16sp"
+            android:imeOptions="actionSearch"
+            android:inputType="text"/>
+
+        <ImageView
+            android:id="@+id/btnSearchSubmit"
+            android:layout_width="24dp"
+            android:layout_height="24dp"
+            android:src="@android:drawable/ic_menu_search"
+            android:contentDescription="Search"/>
+    </LinearLayout>
+
+    <!-- 5 Shortcuts Grid -->
+    <GridLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:columnCount="3"
+        android:alignmentMode="alignMargins"
+        android:columnOrderPreserved="false"
+        android:gravity="center">
+
+        <Button
+            android:id="@+id/btnYoutube"
+            android:layout_width="100dp"
+            android:layout_height="60dp"
+            android:layout_margin="8dp"
+            android:text="YouTube"
+            android:backgroundTint="#2D2D2D"
+            android:textColor="#FFFFFF"/>
+
+        <Button
+            android:id="@+id/btnInstagram"
+            android:layout_width="100dp"
+            android:layout_height="60dp"
+            android:layout_margin="8dp"
+            android:text="Instagram"
+            android:backgroundTint="#2D2D2D"
+            android:textColor="#FFFFFF"/>
+
+        <Button
+            android:id="@+id/btnFacebook"
+            android:layout_width="100dp"
+            android:layout_height="60dp"
+            android:layout_margin="8dp"
+            android:text="Facebook"
+            android:backgroundTint="#2D2D2D"
+            android:textColor="#FFFFFF"/>
+
+        <Button
+            android:id="@+id/btnTwitter"
+            android:layout_width="100dp"
+            android:layout_height="60dp"
+            android:layout_margin="8dp"
+            android:text="Twitter"
+            android:backgroundTint="#2D2D2D"
+            android:textColor="#FFFFFF"/>
+
+        <Button
+            android:id="@+id/btnWhatsapp"
+            android:layout_width="100dp"
+            android:layout_height="60dp"
+            android:layout_margin="8dp"
+            android:text="WhatsApp"
+            android:backgroundTint="#2D2D2D"
+            android:textColor="#FFFFFF"/>
+    </GridLayout>
+
+</LinearLayout>
