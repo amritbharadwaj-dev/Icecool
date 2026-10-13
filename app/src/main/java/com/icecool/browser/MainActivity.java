@@ -129,6 +129,8 @@ public class MainActivity extends AppCompatActivity {
         s.setSupportMultipleWindows(true);
         s.setJavaScriptCanOpenWindowsAutomatically(true);
         s.setMixedContentMode(WebSettings.MIXED_CONTENT_ALWAYS_ALLOW);
+        s.setBuiltInZoomControls(true);
+        s.setDisplayZoomControls(false);
 
         CookieManager.getInstance().setAcceptCookie(true);
         CookieManager.getInstance().setAcceptThirdPartyCookies(webView, true);
@@ -244,7 +246,7 @@ public class MainActivity extends AppCompatActivity {
         popup.getMenu().add("New tab");
         popup.getMenu().add("Close all tabs");
         popup.getMenu().add("Delete all data & cookies");
-        popup.getMenu().add("Zoom: " + currentZoomLevel + "% (- / +)");
+        popup.getMenu().add("Zoom Controls (" + currentZoomLevel + "%)");
 
         popup.setOnMenuItemClickListener(item -> {
             String title = item.getTitle().toString();
@@ -255,7 +257,7 @@ public class MainActivity extends AppCompatActivity {
                 createNewTab("");
             } else if (title.equals("Delete all data & cookies")) {
                 clearAllDataAndCookies();
-            } else if (title.startsWith("Zoom")) {
+            } else if (title.startsWith("Zoom Controls")) {
                 showZoomControlDialog();
             }
             return true;
@@ -267,28 +269,46 @@ public class MainActivity extends AppCompatActivity {
         new AlertDialog.Builder(this)
                 .setTitle("Zoom Controls (" + currentZoomLevel + "%)")
                 .setPositiveButton("Zoom In (+)", (d, w) -> {
-                    if (currentZoomLevel < 200) currentZoomLevel += 25;
-                    applyZoom();
+                    if (currentZoomLevel < 200) {
+                        currentZoomLevel += 25;
+                        applyZoom(true);
+                    }
                 })
                 .setNegativeButton("Zoom Out (-)", (d, w) -> {
-                    if (currentZoomLevel > 50) currentZoomLevel -= 25;
-                    applyZoom();
+                    if (currentZoomLevel > 50) {
+                        currentZoomLevel -= 25;
+                        applyZoom(false);
+                    }
                 })
                 .setNeutralButton("Reset (100%)", (d, w) -> {
                     currentZoomLevel = 100;
-                    applyZoom();
+                    applyZoomReset();
                 })
                 .show();
     }
 
-    private void applyZoom() {
+    private void applyZoom(boolean zoomIn) {
         if (!tabManager.getTabs().isEmpty()) {
             TabManager.TabItem currentTab = tabManager.getTabs().get(tabManager.getActiveTabIdx());
             if (currentTab.webView != null) {
-                currentTab.webView.setZoomLevel((currentZoomLevel / 100.0) * 3);
+                if (zoomIn) {
+                    currentTab.webView.zoomIn();
+                } else {
+                    currentTab.webView.zoomOut();
+                }
             }
         }
-        Toast.makeText(this, "Zoom set to " + currentZoomLevel + "%", Toast.LENGTH_SHORT).show();
+        Toast.makeText(this, "Zoom: " + currentZoomLevel + "%", Toast.LENGTH_SHORT).show();
+    }
+
+    private void applyZoomReset() {
+        if (!tabManager.getTabs().isEmpty()) {
+            TabManager.TabItem currentTab = tabManager.getTabs().get(tabManager.getActiveTabIdx());
+            if (currentTab.webView != null) {
+                currentTab.webView.setInitialScale(100);
+            }
+        }
+        Toast.makeText(this, "Zoom Reset: 100%", Toast.LENGTH_SHORT).show();
     }
 
     private void clearAllDataAndCookies() {
