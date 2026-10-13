@@ -95,7 +95,7 @@ public class MainActivity extends AppCompatActivity {
             "(function(){"
                     + "var T='__TOKEN__';"
                     + "function send(o){try{IceBridge.onPwaInfo(T,JSON.stringify(o));}catch(e){}}"
-                    + "var info={title:document.title||'',manifest:false,sw:false,name:'',icon:'',start:'',theme:''};"
+                    + "var info={title:document.title||'',manifest:false,sw:false,name:'',icon:'',start:'',theme:'',bg:'',maskable:false};"
                     + "var tm=document.querySelector('meta[name=\"theme-color\"]');if(tm&&tm.content)info.theme=tm.content;"
                     + "var fav=document.querySelector('link[rel~=\"apple-touch-icon\"]')||document.querySelector('link[rel~=\"icon\"]');"
                     + "if(fav&&fav.href)info.icon=fav.href;"
@@ -105,15 +105,24 @@ public class MainActivity extends AppCompatActivity {
                     + "}else{fin();}}catch(e){fin();}"
                     + "var link=document.querySelector('link[rel~=\"manifest\"]');"
                     + "if(link&&link.href){fetch(link.href).then(function(r){return r.json();}).then(function(m){"
-                    + "info.manifest=true;info.name=m.short_name||m.name||'';if(m.theme_color)info.theme=m.theme_color;"
+                    + "info.manifest=true;info.name=m.short_name||m.name||'';if(m.theme_color&&!info.theme)info.theme=m.theme_color;if(m.background_color)info.bg=m.background_color;"
                     + "if(m.start_url){try{info.start=new URL(m.start_url,link.href).href;}catch(e){}}"
-                    + "if(m.icons&&m.icons.length){var best=null,bs=-1;"
-                    + "for(var i=0;i<m.icons.length;i++){var ic=m.icons[i];"
+                    + "if(m.icons&&m.icons.length){var best=null,bs=-1,bm=null,bms=-1;"
+                    + "for(var i=0;i<m.icons.length;i++){var ic=m.icons[i];if(/\\.svg(\\?|$)/i.test(ic.src||''))continue;"
                     + "var sz=parseInt(((ic.sizes||'').split(' ')[0]||'0').split('x')[0])||0;"
-                    + "if(sz>=bs){bs=sz;best=ic;}}"
-                    + "if(best){try{info.icon=new URL(best.src,link.href).href;}catch(e){}}}"
+                    + "if((ic.purpose||'').indexOf('maskable')>=0){if(sz>=bms){bms=sz;bm=ic;}}else if(sz>=bs){bs=sz;best=ic;}}"
+                    + "var pick=bm||best;if(pick){info.maskable=!!bm;try{info.icon=new URL(pick.src,link.href).href;}catch(e){}}}"
                     + "fin();}).catch(function(){fin();});}else{fin();}"
                     + "})();";
+
+    // Runs inside the installed app: follows the page's live <meta name="theme-color"> like Chrome does.
+    private static final String THEME_JS =
+            "(function(){if(window.__iceTheme)return;window.__iceTheme=1;"
+                    + "function g(){var ms=document.querySelectorAll('meta[name=\"theme-color\"]');"
+                    + "for(var i=0;i<ms.length;i++){var m=ms[i];if(!m.media||window.matchMedia(m.media).matches)return m.content||'';}return '';}"
+                    + "var last=null;function s(){var c=g();if(c!==last){last=c;try{IceBridge.onTheme(c);}catch(e){}}}"
+                    + "s();try{new MutationObserver(s).observe(document.documentElement,{subtree:true,attributes:true,childList:true,attributeFilter:['content','name']});}catch(e){}"
+                    + "setInterval(s,1500);})();";
 
     private FrameLayout root, webContainer, tabSwitcher;
     private LinearLayout tabGrid;
@@ -229,14 +238,8 @@ public class MainActivity extends AppCompatActivity {
         appMode = true;
         String url = in.getData().toString();
         String name = in.getStringExtra(EXTRA_NAME);
-        int theme = Color.WHITE;
-        String ts = in.getStringExtra(EXTRA_THEME);
-        if (ts != null && !ts.isEmpty()) {
-            try {
-                theme = Color.parseColor(ts);
-            } catch (Exception ignored) {
-            }
-        }
+        Integer parsedTheme = parseCssColor(in.getStringExtra(EXTRA_THEME));
+        int theme = parsedTheme != null ? parsedTheme : Color.WHITE;
         if (name != null && !name.isEmpty()) {
             try {
                 setTaskDescription(new ActivityManager.TaskDescription(name));
@@ -244,16 +247,7 @@ public class MainActivity extends AppCompatActivity {
             }
         }
 
-        Window w = getWindow();
-        w.setStatusBarColor(theme);
-        w.setNavigationBarColor(theme);
-        boolean light = isLight(theme);
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            int f = w.getDecorView().getSystemUiVisibility();
-            f = light ? (f | View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR) : (f & ~View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR);
-            w.getDecorView().setSystemUiVisibility(f);
-        }
-        root.setBackgroundColor(theme);
+        applyBarColor(theme);
 
         appWebView = new WebView(this);
         setupWebView(appWebView);
@@ -262,10 +256,48 @@ public class MainActivity extends AppCompatActivity {
         progressBar = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
         progressBar.setMax(100);
         progressBar.setVisibility(View.GONE);
-        progressBar.setProgressTintList(ColorStateList.valueOf(light ? BLUE : Color.WHITE));
+        progressBar.setProgressTintList(ColorStateList.valueOf(isLight(theme) ? BLUE : Color.WHITE));
         root.addView(progressBar, new FrameLayout.LayoutParams(MATCH, dp(3), Gravity.TOP));
 
         appWebView.loadUrl(url);
+    }
+
+    private void applyBarColor(int c) {
+        Window w = getWindow();
+        w.setStatusBarColor(c);
+        w.setNavigationBarColor(c);
+        boolean light = isLight(c);
+        int f = w.getDecorView().getSystemUiVisibility();
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            f = light ? (f | View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR) : (f & ~View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR);
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            f = light ? (f | View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR) : (f & ~View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR);
+        }
+        w.getDecorView().setSystemUiVisibility(f);
+        root.setBackgroundColor(c);
+    }
+
+    private Integer parseCssColor(String s) {
+        if (s == null) return null;
+        s = s.trim();
+        if (s.isEmpty()) return null;
+        try {
+            if (s.startsWith("#")) {
+                if (s.length() == 4) {
+                    s = "#" + s.charAt(1) + s.charAt(1) + s.charAt(2) + s.charAt(2) + s.charAt(3) + s.charAt(3);
+                }
+                return Color.parseColor(s);
+            }
+            if (s.startsWith("rgb")) {
+                String inner = s.substring(s.indexOf('(') + 1, s.indexOf(')')).trim();
+                String[] p = inner.split("[,\\s/]+");
+                return Color.rgb((int) Float.parseFloat(p[0]), (int) Float.parseFloat(p[1]), (int) Float.parseFloat(p[2]));
+            }
+            return Color.parseColor(s);
+        } catch (Exception e) {
+            return null;
+        }
     }
 
     private boolean isLight(int c) {
@@ -278,6 +310,15 @@ public class MainActivity extends AppCompatActivity {
     /** Called from JS inside the page. Only accepted while a check is pending (token must match). */
     public class PwaBridge {
         @JavascriptInterface
+        public void onTheme(final String css) {
+            runOnUiThread(() -> {
+                if (!appMode) return;
+                Integer c = parseCssColor(css);
+                if (c != null) applyBarColor(c);
+            });
+        }
+
+        @JavascriptInterface
         public void onPwaInfo(final String token, final String json) {
             runOnUiThread(() -> {
                 if (token == null || !token.equals(pendingToken)) return;
@@ -288,9 +329,10 @@ public class MainActivity extends AppCompatActivity {
                     JSONObject o = new JSONObject(json);
                     boolean pwa = o.optBoolean("manifest") && o.optBoolean("sw");
                     onSiteInfo(tab.url, o.optString("title"), pwa, o.optString("name"),
-                            o.optString("icon"), o.optString("start"), o.optString("theme"));
+                            o.optString("icon"), o.optString("start"), o.optString("theme"),
+                            o.optBoolean("maskable"), o.optString("bg"));
                 } catch (Exception e) {
-                    onSiteInfo(tab.url, tab.title == null ? "" : tab.title, false, "", "", "", "");
+                    onSiteInfo(tab.url, tab.title == null ? "" : tab.title, false, "", "", "", "", false, "");
                 }
             });
         }
@@ -309,13 +351,14 @@ public class MainActivity extends AppCompatActivity {
         mainHandler.postDelayed(() -> {
             if (token.equals(pendingToken)) {
                 pendingToken = null;
-                onSiteInfo(tab.url, tab.title == null ? "" : tab.title, false, "", "", "", "");
+                onSiteInfo(tab.url, tab.title == null ? "" : tab.title, false, "", "", "", "", false, "");
             }
         }, 5000);
     }
 
     private void onSiteInfo(String pageUrl, String title, final boolean pwa, String mName,
-                            final String icon, String start, final String theme) {
+                            final String icon, String start, final String theme,
+                            final boolean maskable, final String bg) {
         final String host = hostOf(pageUrl);
         final String defName = !mName.isEmpty() ? mName : (!title.isEmpty() ? title : host);
         String launch = pageUrl;
@@ -348,21 +391,22 @@ public class MainActivity extends AppCompatActivity {
                 .setPositiveButton(pwa ? "Install" : "Add", (d, w) -> {
                     String nm = et.getText().toString().trim();
                     if (nm.isEmpty()) nm = defName;
-                    createShortcut(nm, launchUrl, icon, pwa, theme, host);
+                    createShortcut(nm, launchUrl, icon, pwa, theme, host, maskable, bg);
                 })
                 .setNegativeButton("Cancel", null)
                 .show();
     }
 
     private void createShortcut(final String name, final String url, final String iconUrl,
-                                final boolean app, final String theme, final String host) {
+                                final boolean app, final String theme, final String host,
+                                final boolean maskable, final String bg) {
         toast("Shortcut ban raha hai...");
         new Thread(() -> {
             Bitmap src = iconUrl.isEmpty() ? null : downloadBitmap(iconUrl);
             if (src == null && !host.isEmpty()) {
                 src = downloadBitmap("https://www.google.com/s2/favicons?domain=" + host + "&sz=128");
             }
-            final Bitmap icon = composeIcon(src, name);
+            final Bitmap icon = composeAdaptive(src, maskable, bg, name);
             runOnUiThread(() -> pinShortcut(name, url, icon, app, theme));
         }).start();
     }
@@ -389,7 +433,7 @@ public class MainActivity extends AppCompatActivity {
             ShortcutInfoCompat info = new ShortcutInfoCompat.Builder(this, id)
                     .setShortLabel(name)
                     .setLongLabel(name)
-                    .setIcon(IconCompat.createWithBitmap(icon))
+                    .setIcon(IconCompat.createWithAdaptiveBitmap(icon))
                     .setIntent(i)
                     .build();
             ShortcutManagerCompat.requestPinShortcut(this, info, null);
@@ -399,24 +443,28 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
-    private Bitmap composeIcon(Bitmap src, String name) {
-        int s = 192;
+    private Bitmap composeAdaptive(Bitmap src, boolean maskable, String bgCss, String name) {
+        int s = 432; // adaptive icon canvas (108dp x4); launcher applies its own mask
         Bitmap out = Bitmap.createBitmap(s, s, Bitmap.Config.ARGB_8888);
         Canvas c = new Canvas(out);
         Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
         if (src != null) {
-            p.setColor(Color.WHITE);
-            c.drawRoundRect(new RectF(0, 0, s, s), 46, 46, p);
-            int pad = 34;
-            Bitmap sc = Bitmap.createScaledBitmap(src, s - 2 * pad, s - 2 * pad, true);
-            c.drawBitmap(sc, pad, pad, null);
+            int bg = Color.WHITE;
+            int corner = src.getPixel(0, 0);
+            Integer parsed = parseCssColor(bgCss);
+            if (Color.alpha(corner) >= 250) bg = corner;
+            else if (parsed != null) bg = parsed;
+            c.drawColor(bg);
+            int t = (int) (s * (maskable ? 0.84f : 0.58f));
+            Bitmap sc = Bitmap.createScaledBitmap(src, t, t, true);
+            c.drawBitmap(sc, (s - t) / 2f, (s - t) / 2f, null);
         } else {
             p.setShader(new LinearGradient(0, 0, s, s, 0xFF00E5FF, 0xFF7C4DFF, Shader.TileMode.CLAMP));
-            c.drawRoundRect(new RectF(0, 0, s, s), 46, 46, p);
+            c.drawRect(0, 0, s, s, p);
             p.setShader(null);
             p.setColor(Color.WHITE);
             p.setTextAlign(Paint.Align.CENTER);
-            p.setTextSize(110);
+            p.setTextSize(190);
             p.setTypeface(Typeface.DEFAULT_BOLD);
             String letter = name == null || name.isEmpty() ? "I" : name.substring(0, 1).toUpperCase();
             c.drawText(letter, s / 2f, s / 2f - (p.descent() + p.ascent()) / 2f, p);
@@ -1267,6 +1315,7 @@ public class MainActivity extends AppCompatActivity {
                     }
                 }
                 CookieManager.getInstance().flush();
+                if (appMode && view == appWebView) view.evaluateJavascript(THEME_JS, null);
             }
         });
 
