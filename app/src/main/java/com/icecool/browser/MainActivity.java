@@ -2,11 +2,11 @@ package com.icecool.browser;
 
 import android.Manifest;
 import android.app.AlertDialog;
-import android.content.pm.PackageManager;
 import android.os.Build;
 import android.os.Bundle;
 import android.view.KeyEvent;
 import android.view.View;
+import android.view.ViewGroup;
 import android.view.inputmethod.EditorInfo;
 import android.webkit.CookieManager;
 import android.webkit.PermissionRequest;
@@ -17,23 +17,22 @@ import android.webkit.WebView;
 import android.webkit.WebViewClient;
 import android.widget.EditText;
 import android.widget.FrameLayout;
+import android.widget.PopupMenu;
 import android.widget.TextView;
 import android.widget.Toast;
-import androidx.annotation.NonNull;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.app.ActivityCompat;
-import androidx.core.content.ContextCompat;
 import java.util.List;
 
 public class MainActivity extends AppCompatActivity {
 
-    private EditText etSearchUrl;
+    private EditText etSearchUrl, etHomeSearch;
     private TextView btnTabCounter;
     private FrameLayout webContainer;
     private View homeView;
     private TabManager tabManager;
-
-    private static final int PERMISSION_REQ_CODE = 101;
+    private View customView;
+    private WebChromeClient.CustomViewCallback customViewCallback;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -43,39 +42,46 @@ public class MainActivity extends AppCompatActivity {
         tabManager = TabManager.getInstance();
 
         etSearchUrl = findViewById(R.id.etSearchUrl);
+        etHomeSearch = findViewById(R.id.etHomeSearch);
         btnTabCounter = findViewById(R.id.btnTabCounter);
         webContainer = findViewById(R.id.webContainer);
         homeView = findViewById(R.id.homeView);
 
-        checkAndRequestPermissions();
+        checkPermissions();
 
-        // Top Navigation Controls
+        // Top Navigation Listeners
         findViewById(R.id.btnHomeNav).setOnClickListener(v -> navigateHome());
         findViewById(R.id.btnRefresh).setOnClickListener(v -> refreshCurrentTab());
-        findViewById(R.id.btnMenu).setOnClickListener(v -> showChromeMenu());
+        findViewById(R.id.btnMenu).setOnClickListener(v -> showRightSidePopupMenu(v));
         btnTabCounter.setOnClickListener(v -> showTabSwitcherDialog());
 
-        // Search action
-        etSearchUrl.setOnEditorActionListener((TextView v, int actionId, KeyEvent event) -> {
-            if (actionId == EditorInfo.IME_ACTION_SEARCH || actionId == EditorInfo.IME_ACTION_GO
-                    || (event != null && event.getKeyCode() == KeyEvent.KEYCODE_ENTER)) {
-                String input = etSearchUrl.getText().toString().trim();
-                if (!input.isEmpty()) {
-                    loadUrlInCurrentTab(formatUrl(input));
-                }
+        // Top Search Action
+        etSearchUrl.setOnEditorActionListener((v, actionId, event) -> {
+            if (actionId == EditorInfo.IME_ACTION_SEARCH || (event != null && event.getKeyCode() == KeyEvent.KEYCODE_ENTER)) {
+                String query = etSearchUrl.getText().toString().trim();
+                if (!query.isEmpty()) loadUrlInNewOrCurrentTab(formatUrl(query));
                 return true;
             }
             return false;
         });
 
-        // 5 Shortcuts
-        findViewById(R.id.btnYoutube).setOnClickListener(v -> loadUrlInCurrentTab("https://www.youtube.com"));
-        findViewById(R.id.btnInstagram).setOnClickListener(v -> loadUrlInCurrentTab("https://www.instagram.com"));
-        findViewById(R.id.btnFacebook).setOnClickListener(v -> loadUrlInCurrentTab("https://www.facebook.com"));
-        findViewById(R.id.btnTwitter).setOnClickListener(v -> loadUrlInCurrentTab("https://www.twitter.com"));
-        findViewById(R.id.btnWhatsapp).setOnClickListener(v -> loadUrlInCurrentTab("https://web.whatsapp.com"));
+        // Home Search Action
+        etHomeSearch.setOnEditorActionListener((v, actionId, event) -> {
+            if (actionId == EditorInfo.IME_ACTION_SEARCH || (event != null && event.getKeyCode() == KeyEvent.KEYCODE_ENTER)) {
+                String query = etHomeSearch.getText().toString().trim();
+                if (!query.isEmpty()) loadUrlInNewOrCurrentTab(formatUrl(query));
+                return true;
+            }
+            return false;
+        });
 
-        // Initialize Home state
+        // Shortcuts
+        findViewById(R.id.btnYoutube).setOnClickListener(v -> loadUrlInNewOrCurrentTab("https://www.youtube.com"));
+        findViewById(R.id.btnInstagram).setOnClickListener(v -> loadUrlInNewOrCurrentTab("https://www.instagram.com"));
+        findViewById(R.id.btnFacebook).setOnClickListener(v -> loadUrlInNewOrCurrentTab("https://www.facebook.com"));
+        findViewById(R.id.btnTwitter).setOnClickListener(v -> loadUrlInNewOrCurrentTab("https://www.twitter.com"));
+        findViewById(R.id.btnWhatsapp).setOnClickListener(v -> loadUrlInNewOrCurrentTab("https://web.whatsapp.com"));
+
         if (tabManager.getTabs().isEmpty()) {
             createNewTab("");
         } else {
@@ -83,25 +89,20 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
-    private void checkAndRequestPermissions() {
+    private void checkPermissions() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            String[] permissions = {
+            ActivityCompat.requestPermissions(this, new String[]{
                     Manifest.permission.CAMERA,
                     Manifest.permission.RECORD_AUDIO,
                     Manifest.permission.ACCESS_FINE_LOCATION
-            };
-            ActivityCompat.requestPermissions(this, permissions, PERMISSION_REQ_CODE);
+            }, 101);
         }
     }
 
     private String formatUrl(String input) {
-        if (input.startsWith("http://") || input.startsWith("https://")) {
-            return input;
-        } else if (input.contains(".") && !input.contains(" ")) {
-            return "https://" + input;
-        } else {
-            return "https://www.google.com/search?q=" + android.net.Uri.encode(input);
-        }
+        if (input.startsWith("http://") || input.startsWith("https://")) return input;
+        if (input.contains(".") && !input.contains(" ")) return "https://" + input;
+        return "https://www.google.com/search?q=" + android.net.Uri.encode(input);
     }
 
     private void createNewTab(String url) {
@@ -111,7 +112,7 @@ public class MainActivity extends AppCompatActivity {
         }
 
         WebView webView = new WebView(this);
-        setupWebView(webView);
+        setupWebViewSettings(webView);
 
         TabManager.TabItem tab = new TabManager.TabItem(url, url.isEmpty() ? "New Tab" : url, webView);
         tabManager.addTab(tab);
@@ -122,18 +123,27 @@ public class MainActivity extends AppCompatActivity {
         renderActiveTab();
     }
 
-    private void setupWebView(WebView webView) {
+    private void setupWebViewSettings(WebView webView) {
         WebSettings s = webView.getSettings();
         s.setJavaScriptEnabled(true);
         s.setDomStorageEnabled(true);
         s.setDatabaseEnabled(true);
         s.setLoadsImagesAutomatically(true);
+        s.setSupportMultipleWindows(true);
+        s.setJavaScriptCanOpenWindowsAutomatically(true);
         s.setMixedContentMode(WebSettings.MIXED_CONTENT_ALWAYS_ALLOW);
 
         CookieManager.getInstance().setAcceptCookie(true);
         CookieManager.getInstance().setAcceptThirdPartyCookies(webView, true);
 
         webView.setWebViewClient(new WebViewClient() {
+            @Override
+            public boolean shouldOverrideUrlLoading(WebView view, String url) {
+                // Open clicked links in a new tab automatically like Chrome
+                createNewTab(url);
+                return true;
+            }
+
             @Override
             public void onPageFinished(WebView view, String url) {
                 super.onPageFinished(view, url);
@@ -144,8 +154,32 @@ public class MainActivity extends AppCompatActivity {
 
         webView.setWebChromeClient(new WebChromeClient() {
             @Override
-            public void onPermissionRequest(final PermissionRequest request) {
+            public void onPermissionRequest(PermissionRequest request) {
                 request.grant(request.getResources());
+            }
+
+            // Full-screen Video Support (Fixes full screen video playback like YouTube)
+            @Override
+            public void onShowCustomView(View view, CustomViewCallback callback) {
+                if (customView != null) {
+                    callback.onCustomViewHidden();
+                    return;
+                }
+                customView = view;
+                customViewCallback = callback;
+                webContainer.setVisibility(View.GONE);
+                FrameLayout decor = (FrameLayout) getWindow().getDecorView();
+                decor.addView(customView, new ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+            }
+
+            @Override
+            public void onHideCustomView() {
+                if (customView == null) return;
+                FrameLayout decor = (FrameLayout) getWindow().getDecorView();
+                decor.removeView(customView);
+                customView = null;
+                webContainer.setVisibility(View.VISIBLE);
+                if (customViewCallback != null) customViewCallback.onCustomViewHidden();
             }
         });
     }
@@ -176,17 +210,20 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
-    private void loadUrlInCurrentTab(String url) {
+    private void loadUrlInNewOrCurrentTab(String url) {
         if (tabManager.getTabs().isEmpty()) {
             createNewTab(url);
             return;
         }
-
         TabManager.TabItem currentTab = tabManager.getTabs().get(tabManager.getActiveTabIdx());
-        currentTab.url = url;
-        currentTab.title = url;
-        currentTab.webView.loadUrl(url);
-        renderActiveTab();
+        if (currentTab.url.isEmpty()) {
+            currentTab.url = url;
+            currentTab.title = url;
+            currentTab.webView.loadUrl(url);
+            renderActiveTab();
+        } else {
+            createNewTab(url);
+        }
     }
 
     private void navigateHome() {
@@ -207,32 +244,32 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
-    private void showChromeMenu() {
-        String[] options = {
-                "New tab",
-                "Close all tabs",
-                "Clear all data & cookies"
-        };
+    // Chrome-style Right Side Popup Menu
+    private void showRightSidePopupMenu(View anchor) {
+        PopupMenu popup = new PopupMenu(this, anchor);
+        popup.getMenu().add("New tab");
+        popup.getMenu().add("Close all tabs");
+        popup.getMenu().add("Clear all data & cookies");
 
-        new AlertDialog.Builder(this)
-                .setItems(options, (dialog, which) -> {
-                    if (which == 0) {
-                        createNewTab("");
-                    } else if (which == 1) {
-                        tabManager.clearAllTabs();
-                        createNewTab("");
-                    } else if (which == 2) {
-                        clearAllDataAndCookies();
-                    }
-                })
-                .show();
+        popup.setOnMenuItemClickListener(item -> {
+            String title = item.getTitle().toString();
+            if (title.equals("New tab")) {
+                createNewTab("");
+            } else if (title.equals("Close all tabs")) {
+                tabManager.clearAllTabs();
+                createNewTab("");
+            } else if (title.equals("Clear all data & cookies")) {
+                clearAllDataAndCookies();
+            }
+            return true;
+        });
+        popup.show();
     }
 
     private void clearAllDataAndCookies() {
         CookieManager.getInstance().removeAllCookies(null);
         CookieManager.getInstance().flush();
         WebStorage.getInstance().deleteAllData();
-
         for (TabManager.TabItem tab : tabManager.getTabs()) {
             if (tab.webView != null) {
                 tab.webView.clearCache(true);
@@ -257,7 +294,7 @@ public class MainActivity extends AppCompatActivity {
                     renderActiveTab();
                 })
                 .setPositiveButton("+ New Tab", (dialog, which) -> createNewTab(""))
-                .setNegativeButton("Close Selected Tab", (dialog, which) -> {
+                .setNegativeButton("Close Current Tab", (dialog, which) -> {
                     tabManager.removeTab(tabManager.getActiveTabIdx());
                     if (tabManager.getTabs().isEmpty()) {
                         createNewTab("");
@@ -270,6 +307,12 @@ public class MainActivity extends AppCompatActivity {
 
     @Override
     public void onBackPressed() {
+        if (customView != null) {
+            // Exit full screen video if playing
+            WebChromeClient client = new WebChromeClient();
+            client.onHideCustomView();
+            return;
+        }
         if (!tabManager.getTabs().isEmpty()) {
             TabManager.TabItem currentTab = tabManager.getTabs().get(tabManager.getActiveTabIdx());
             if (currentTab.webView != null && currentTab.webView.canGoBack()) {
