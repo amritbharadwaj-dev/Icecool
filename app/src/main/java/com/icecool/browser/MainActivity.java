@@ -37,6 +37,7 @@ import android.view.View;
 import android.view.ViewGroup;
 import android.view.ViewOutlineProvider;
 import android.view.Window;
+import android.view.WindowManager;
 import android.view.inputmethod.EditorInfo;
 import android.view.inputmethod.InputMethodManager;
 import android.webkit.CookieManager;
@@ -88,8 +89,8 @@ public class MainActivity extends AppCompatActivity {
     private static final int MATCH = ViewGroup.LayoutParams.MATCH_PARENT;
     private static final int WRAP = ViewGroup.LayoutParams.WRAP_CONTENT;
     private static final int BLUE = 0xFF2979FF;
-    private static final int INK = 0xFF3C4043;
-    private static final int MAX_TABS = 20;
+    private int INK = 0xFF3C4043;
+    private static final int MAX_TABS = 25;
     private static final int[] ZOOM_STEPS = {50, 67, 75, 80, 90, 100, 110, 125, 150, 175, 200, 250, 300};
 
     private static final String EXTRA_MODE = "ice_mode";
@@ -99,6 +100,20 @@ public class MainActivity extends AppCompatActivity {
     private static final String MODE_WEB = "web";
 
     private static final int[] PASTELS = {0xFFE3F2FD, 0xFFFCE4EC, 0xFFE8F5E9, 0xFFFFF3E0, 0xFFF3E5F5, 0xFFE0F7FA};
+
+    private static final String[] DEF_NAMES = {"YouTube", "Instagram", "Facebook", "X", "WhatsApp", "Telegram",
+            "Snapchat", "Reddit", "LinkedIn", "Pinterest", "Amazon", "Flipkart", "Google", "GitHub", "Wikipedia", "Netflix"};
+    private static final String[] DEF_URLS = {"https://www.youtube.com", "https://www.instagram.com",
+            "https://www.facebook.com", "https://x.com", "https://web.whatsapp.com", "https://web.telegram.org",
+            "https://www.snapchat.com", "https://www.reddit.com", "https://www.linkedin.com",
+            "https://www.pinterest.com", "https://www.amazon.in", "https://www.flipkart.com",
+            "https://www.google.com", "https://github.com", "https://www.wikipedia.org", "https://www.netflix.com"};
+    private static final String[] DEF_DOMAINS = {"youtube.com", "instagram.com", "facebook.com", "x.com",
+            "whatsapp.com", "telegram.org", "snapchat.com", "reddit.com", "linkedin.com", "pinterest.com",
+            "amazon.in", "flipkart.com", "google.com", "github.com", "wikipedia.org", "netflix.com"};
+    private static final int[] DEF_RINGS = {0xFFFF1744, 0xFFE1306C, 0xFF1877F2, 0xFF212121, 0xFF25D366, 0xFF229ED9,
+            0xFFFFC400, 0xFFFF4500, 0xFF0A66C2, 0xFFE60023, 0xFFFF9900, 0xFF2874F0, 0xFF4285F4, 0xFF6E5494,
+            0xFF9E9E9E, 0xFFE50914};
 
     // Runs inside the page: detects manifest + service worker and reports back.
     private static final String PWA_JS =
@@ -146,6 +161,13 @@ public class MainActivity extends AppCompatActivity {
     private TabManager tabManager;
     private PopupWindow menuPopup;
     private SharedPreferences prefs;
+    private boolean privateMode = false;
+    private LinearLayout shortcutsBox;
+    private final Map<String, Integer> privateZoom = new HashMap<>();
+    // theme colours (light by default, dark in private window)
+    private int cText = 0xFF202124, cStrip = 0xFFDCE1EC, cBar = Color.WHITE, cPill = 0xFFEEF1FF,
+            cActive = Color.WHITE, cInactive = 0xFF5F6368, cMenuBg = Color.WHITE,
+            cSwA = 0xFFEAF2FF, cSwB = 0xFFFBEFFA, cTitle = 0xFF283593, cCard = 0;
 
     private View customView;
     private WebChromeClient.CustomViewCallback customViewCallback;
@@ -173,6 +195,16 @@ public class MainActivity extends AppCompatActivity {
         root = findViewById(R.id.root);
         tabManager = TabManager.getInstance();
         prefs = getSharedPreferences("icecool", MODE_PRIVATE);
+        privateMode = isPrivateMode();
+        if (privateMode) {
+            // blocks screenshots + screen recording + hides content in recents
+            getWindow().setFlags(WindowManager.LayoutParams.FLAG_SECURE, WindowManager.LayoutParams.FLAG_SECURE);
+            initPrivateTheme();
+            try {
+                setTaskDescription(new ActivityManager.TaskDescription("Private window"));
+            } catch (Throwable ignored) {
+            }
+        }
         computeUserAgents();
 
         Window w = getWindow();
@@ -182,6 +214,7 @@ public class MainActivity extends AppCompatActivity {
             w.getDecorView().setSystemUiVisibility(
                     w.getDecorView().getSystemUiVisibility() | View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR);
         }
+        if (privateMode) applyBarColor(cBar);
         boolean edge = Build.VERSION.SDK_INT >= 35 && getApplicationInfo().targetSdkVersion >= 35;
         if (edge) {
             root.setOnApplyWindowInsetsListener((v, insets) -> {
@@ -199,7 +232,7 @@ public class MainActivity extends AppCompatActivity {
         }
 
         buildUi();
-        if (tabManager.getTabs().isEmpty()) restoreTabs();
+        if (!privateMode && tabManager.getTabs().isEmpty()) restoreTabs();
         if (savedInstanceState == null && handleWebIntent(in)) {
             // opened a shortcut / link in a new tab
         } else if (tabManager.getTabs().isEmpty()) {
@@ -221,12 +254,16 @@ public class MainActivity extends AppCompatActivity {
     @Override
     protected void onStop() {
         super.onStop();
-        if (!appMode) saveTabs();
+        if (!appMode && !privateMode) saveTabs();
     }
 
     @Override
     protected void onDestroy() {
         super.onDestroy();
+        if (privateMode && isFinishing()) {
+            wipePrivateData();
+            android.os.Process.killProcess(android.os.Process.myPid());
+        }
         if (appMode && appWebView != null) {
             try {
                 root.removeView(appWebView);
@@ -234,6 +271,65 @@ public class MainActivity extends AppCompatActivity {
             } catch (Throwable ignored) {
             }
         }
+    }
+
+    protected boolean isPrivateMode() {
+        return false;
+    }
+
+    private void initPrivateTheme() {
+        INK = 0xFFE8EAED;
+        cText = 0xFFE8EAED;
+        cStrip = 0xFF202124;
+        cBar = 0xFF35363A;
+        cPill = 0xFF202124;
+        cActive = 0xFF35363A;
+        cInactive = 0xFF9AA0A6;
+        cMenuBg = 0xFF35363A;
+        cSwA = 0xFF202124;
+        cSwB = 0xFF2B2C2F;
+        cTitle = 0xFFE8EAED;
+        cCard = 0xFF3C4043;
+    }
+
+    private void openPrivateWindow() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.P) {
+            toast("Private window ke liye Android 9 ya usse naya chahiye");
+            return;
+        }
+        Intent i = new Intent(this, PrivateActivity.class);
+        i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+        startActivity(i);
+    }
+
+    private void wipePrivateData() {
+        try {
+            CookieManager cm = CookieManager.getInstance();
+            cm.removeAllCookies(null);
+            cm.flush();
+        } catch (Throwable ignored) {
+        }
+        try {
+            WebStorage.getInstance().deleteAllData();
+        } catch (Throwable ignored) {
+        }
+        try {
+            for (TabManager.TabItem t : tabManager.getTabs()) {
+                if (t.webView != null) {
+                    t.webView.clearCache(true);
+                    t.webView.clearHistory();
+                    t.webView.clearFormData();
+                }
+            }
+        } catch (Throwable ignored) {
+        }
+    }
+
+    private void exitPrivateWindow() {
+        wipePrivateData();
+        for (TabManager.TabItem t : new ArrayList<>(tabManager.getTabs())) destroyTab(t);
+        tabManager.clearAllTabs();
+        finishAndRemoveTask();
     }
 
     private boolean handleWebIntent(Intent in) {
@@ -649,7 +745,8 @@ public class MainActivity extends AppCompatActivity {
         FrameLayout line = new FrameLayout(this);
         accentLine = new View(this);
         accentLine.setBackground(new GradientDrawable(GradientDrawable.Orientation.LEFT_RIGHT,
-                new int[]{0xFF00E5FF, 0xFF2979FF, 0xFF7C4DFF, 0xFFFF4081}));
+                privateMode ? new int[]{0xFF35363A, 0xFF35363A}
+                        : new int[]{0xFF00E5FF, 0xFF2979FF, 0xFF7C4DFF, 0xFFFF4081}));
         line.addView(accentLine, new FrameLayout.LayoutParams(MATCH, MATCH));
         progressBar = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
         progressBar.setMax(100);
@@ -661,7 +758,7 @@ public class MainActivity extends AppCompatActivity {
         webContainer = new FrameLayout(this);
         main.addView(webContainer, new LinearLayout.LayoutParams(MATCH, 0, 1f));
 
-        homeView = buildHomeView();
+        homeView = privateMode ? buildPrivateHome() : buildHomeView();
         tabSwitcher = buildTabSwitcher();
         tabSwitcher.setVisibility(View.GONE);
         root.addView(tabSwitcher, new FrameLayout.LayoutParams(MATCH, MATCH));
@@ -673,7 +770,7 @@ public class MainActivity extends AppCompatActivity {
         LinearLayout bar = new LinearLayout(this);
         bar.setOrientation(LinearLayout.HORIZONTAL);
         bar.setGravity(Gravity.BOTTOM);
-        bar.setBackgroundColor(0xFFDCE1EC);
+        bar.setBackgroundColor(cStrip);
         bar.setPadding(dp(6), dp(6), dp(4), 0);
         bar.setLayoutParams(new LinearLayout.LayoutParams(MATCH, dp(44)));
 
@@ -686,7 +783,7 @@ public class MainActivity extends AppCompatActivity {
         tabStripScroll.addView(tabStrip, new ViewGroup.LayoutParams(WRAP, MATCH));
         bar.addView(tabStripScroll, new LinearLayout.LayoutParams(0, MATCH, 1f));
 
-        IconView plus = new IconView(this, IconView.PLUS, 0xFF3C4043);
+        IconView plus = new IconView(this, IconView.PLUS, INK);
         plus.setPadding(dp(7), dp(7), dp(7), dp(7));
         plus.setBackground(ripple(true));
         plus.setOnClickListener(v -> createNewTab(""));
@@ -732,7 +829,7 @@ public class MainActivity extends AppCompatActivity {
         chip.setPadding(dp(10), 0, dp(4), 0);
         float r = dp(12);
         GradientDrawable bg = new GradientDrawable();
-        bg.setColor(active ? Color.WHITE : 0x00FFFFFF);
+        bg.setColor(active ? cActive : 0x00FFFFFF);
         bg.setCornerRadii(new float[]{r, r, r, r, 0, 0, 0, 0});
         chip.setBackground(bg);
 
@@ -744,7 +841,7 @@ public class MainActivity extends AppCompatActivity {
         TextView t = new TextView(this);
         t.setText(isHome ? "New tab" : (tab.title != null && !tab.title.isEmpty() ? tab.title : tab.url));
         t.setTextSize(12);
-        t.setTextColor(active ? 0xFF202124 : 0xFF5F6368);
+        t.setTextColor(active ? cText : cInactive);
         t.setSingleLine(true);
         t.setEllipsize(TextUtils.TruncateAt.END);
         t.setPadding(dp(8), 0, dp(4), 0);
@@ -783,7 +880,7 @@ public class MainActivity extends AppCompatActivity {
         LinearLayout bar = new LinearLayout(this);
         bar.setOrientation(LinearLayout.HORIZONTAL);
         bar.setGravity(Gravity.CENTER_VERTICAL);
-        bar.setBackgroundColor(Color.WHITE);
+        bar.setBackgroundColor(cBar);
         bar.setPadding(dp(6), 0, dp(6), 0);
         bar.setElevation(dp(2));
         bar.setLayoutParams(new LinearLayout.LayoutParams(MATCH, dp(54)));
@@ -794,7 +891,7 @@ public class MainActivity extends AppCompatActivity {
         LinearLayout pill = new LinearLayout(this);
         pill.setOrientation(LinearLayout.HORIZONTAL);
         pill.setGravity(Gravity.CENTER_VERTICAL);
-        pill.setBackground(roundBg(0xFFEEF1FF, 20, 0, 0));
+        pill.setBackground(roundBg(cPill, 20, 0, 0));
         pill.setPadding(dp(12), 0, dp(8), 0);
         LinearLayout.LayoutParams plp = new LinearLayout.LayoutParams(0, dp(40), 1f);
         plp.setMargins(dp(4), 0, dp(6), 0);
@@ -802,9 +899,9 @@ public class MainActivity extends AppCompatActivity {
         pill.addView(new IconView(this, IconView.SEARCH, 0xFF7C4DFF), new LinearLayout.LayoutParams(dp(18), dp(18)));
         etSearchUrl = new EditText(this);
         etSearchUrl.setBackground(null);
-        etSearchUrl.setHint("Search Google or type URL");
+        etSearchUrl.setHint(privateMode ? "Search privately or type URL" : "Search Google or type URL");
         etSearchUrl.setHintTextColor(0xFF70757A);
-        etSearchUrl.setTextColor(0xFF202124);
+        etSearchUrl.setTextColor(cText);
         etSearchUrl.setTextSize(14);
         etSearchUrl.setSingleLine(true);
         etSearchUrl.setSelectAllOnFocus(true);
@@ -916,7 +1013,7 @@ public class MainActivity extends AppCompatActivity {
         etHomeSearch.setBackground(null);
         etHomeSearch.setHint("Search Google or type URL");
         etHomeSearch.setHintTextColor(0xFF70757A);
-        etHomeSearch.setTextColor(0xFF202124);
+        etHomeSearch.setTextColor(cText);
         etHomeSearch.setTextSize(16);
         etHomeSearch.setSingleLine(true);
         etHomeSearch.setImeOptions(EditorInfo.IME_ACTION_SEARCH);
@@ -928,33 +1025,201 @@ public class MainActivity extends AppCompatActivity {
         cardLp.setMargins(dp(24), 0, dp(24), dp(24));
         col.addView(card, cardLp);
 
-        String[] names = {"YouTube", "Instagram", "Facebook", "X", "WhatsApp", "Telegram", "Snapchat", "Reddit",
-                "LinkedIn", "Pinterest", "Amazon", "Flipkart", "Google", "GitHub", "Wikipedia", "Netflix"};
-        String[] urls = {"https://www.youtube.com", "https://www.instagram.com", "https://www.facebook.com",
-                "https://x.com", "https://web.whatsapp.com", "https://web.telegram.org", "https://www.snapchat.com",
-                "https://www.reddit.com", "https://www.linkedin.com", "https://www.pinterest.com",
-                "https://www.amazon.in", "https://www.flipkart.com", "https://www.google.com",
-                "https://github.com", "https://www.wikipedia.org", "https://www.netflix.com"};
-        String[] domains = {"youtube.com", "instagram.com", "facebook.com", "x.com", "whatsapp.com", "telegram.org",
-                "snapchat.com", "reddit.com", "linkedin.com", "pinterest.com", "amazon.in", "flipkart.com",
-                "google.com", "github.com", "wikipedia.org", "netflix.com"};
-        int[] rings = {0xFFFF1744, 0xFFE1306C, 0xFF1877F2, 0xFF212121, 0xFF25D366, 0xFF229ED9, 0xFFFFC400, 0xFFFF4500,
-                0xFF0A66C2, 0xFFE60023, 0xFFFF9900, 0xFF2874F0, 0xFF4285F4, 0xFF6E5494, 0xFF9E9E9E, 0xFFE50914};
-
-        for (int r = 0; r < 4; r++) {
-            LinearLayout row = new LinearLayout(this);
-            row.setOrientation(LinearLayout.HORIZONTAL);
-            for (int c = 0; c < 4; c++) {
-                int i = r * 4 + c;
-                row.addView(buildShortcut(names[i], urls[i], domains[i], rings[i]), new LinearLayout.LayoutParams(0, WRAP, 1f));
-            }
-            LinearLayout.LayoutParams rlp = new LinearLayout.LayoutParams(MATCH, WRAP);
-            rlp.setMargins(dp(16), 0, dp(16), 0);
-            col.addView(row, rlp);
-        }
+        shortcutsBox = new LinearLayout(this);
+        shortcutsBox.setOrientation(LinearLayout.VERTICAL);
+        LinearLayout.LayoutParams sbLp = new LinearLayout.LayoutParams(MATCH, WRAP);
+        sbLp.setMargins(dp(16), 0, dp(16), 0);
+        col.addView(shortcutsBox, sbLp);
+        rebuildShortcuts();
 
         sv.addView(col, new ViewGroup.LayoutParams(MATCH, WRAP));
         return sv;
+    }
+
+    // ---- shortcuts shown on the browser home (pinned ones first, user can remove them) ----
+
+    private List<String[]> loadPinned() {
+        List<String[]> out = new ArrayList<>();
+        try {
+            String js = prefs.getString("pinned", null);
+            if (js == null) return out;
+            JSONArray arr = new JSONArray(js);
+            for (int i = 0; i < arr.length(); i++) {
+                JSONObject o = arr.getJSONObject(i);
+                out.add(new String[]{o.optString("n"), o.optString("u")});
+            }
+        } catch (Exception ignored) {
+        }
+        return out;
+    }
+
+    private void savePinned(List<String[]> list) {
+        try {
+            JSONArray arr = new JSONArray();
+            for (String[] p : list) {
+                JSONObject o = new JSONObject();
+                o.put("n", p[0]);
+                o.put("u", p[1]);
+                arr.put(o);
+            }
+            prefs.edit().putString("pinned", arr.toString()).apply();
+        } catch (Exception ignored) {
+        }
+    }
+
+    private void pinToBrowserHome(TabManager.TabItem tab) {
+        if (privateMode) return;
+        if (tab == null || tab.url == null || tab.url.isEmpty()) {
+            toast("Ye khali tab hai, pehle koi site kholo");
+            return;
+        }
+        List<String[]> list = loadPinned();
+        for (String[] p : list) {
+            if (p[1].equals(tab.url)) {
+                toast("Ye pehle se Ice Cool home me pinned hai");
+                return;
+            }
+        }
+        if (list.size() >= 24) {
+            toast("Max 24 pin ho sakte hain, pehle koi hata do");
+            return;
+        }
+        String host = hostOf(tab.url);
+        String name = (tab.title != null && !tab.title.isEmpty() && !tab.title.equals(tab.url)) ? tab.title : host;
+        list.add(0, new String[]{name, tab.url});
+        savePinned(list);
+        rebuildShortcuts();
+        toast("Ice Cool home me pin ho gaya (hatane ke liye long-press)");
+    }
+
+    private void removePinned(String url) {
+        List<String[]> list = loadPinned();
+        for (int i = 0; i < list.size(); i++) {
+            if (list.get(i)[1].equals(url)) {
+                list.remove(i);
+                break;
+            }
+        }
+        savePinned(list);
+        rebuildShortcuts();
+    }
+
+    private void rebuildShortcuts() {
+        if (shortcutsBox == null) return;
+        shortcutsBox.removeAllViews();
+        List<View> tiles = new ArrayList<>();
+        for (final String[] p : loadPinned()) {
+            View tile = buildShortcut(p[0], p[1], hostOf(p[1]), 0xFF7C4DFF);
+            tile.setOnLongClickListener(v -> {
+                new AlertDialog.Builder(this)
+                        .setTitle("Remove from home?")
+                        .setMessage(p[0])
+                        .setPositiveButton("Remove", (d, w) -> removePinned(p[1]))
+                        .setNegativeButton("Cancel", null)
+                        .show();
+                return true;
+            });
+            tiles.add(tile);
+        }
+        for (int i = 0; i < DEF_NAMES.length; i++) {
+            tiles.add(buildShortcut(DEF_NAMES[i], DEF_URLS[i], DEF_DOMAINS[i], DEF_RINGS[i]));
+        }
+        LinearLayout row = null;
+        for (int i = 0; i < tiles.size(); i++) {
+            if (i % 4 == 0) {
+                row = new LinearLayout(this);
+                row.setOrientation(LinearLayout.HORIZONTAL);
+                shortcutsBox.addView(row, new LinearLayout.LayoutParams(MATCH, WRAP));
+            }
+            row.addView(tiles.get(i), new LinearLayout.LayoutParams(0, WRAP, 1f));
+        }
+        if (row != null) {
+            int rem = (4 - (tiles.size() % 4)) % 4;
+            for (int k = 0; k < rem; k++) row.addView(new View(this), new LinearLayout.LayoutParams(0, 1, 1f));
+        }
+    }
+
+    // ---- private window welcome page (dark, Chrome-incognito style) ----
+
+    private ScrollView buildPrivateHome() {
+        ScrollView sv = new ScrollView(this);
+        sv.setFillViewport(true);
+        sv.setBackgroundColor(0xFF202124);
+
+        LinearLayout col = new LinearLayout(this);
+        col.setOrientation(LinearLayout.VERTICAL);
+        col.setGravity(Gravity.CENTER_HORIZONTAL);
+        col.setPadding(dp(24), dp(40), dp(24), dp(40));
+
+        col.addView(new PrivateBadge(this), new LinearLayout.LayoutParams(dp(96), dp(96)));
+
+        TextView title = new TextView(this);
+        title.setText("Welcome to private window");
+        title.setTextSize(26);
+        title.setTextColor(0xFFE8EAED);
+        title.setGravity(Gravity.CENTER);
+        LinearLayout.LayoutParams tlp = new LinearLayout.LayoutParams(WRAP, WRAP);
+        tlp.setMargins(0, dp(22), 0, dp(14));
+        col.addView(title, tlp);
+
+        boolean wide = getResources().getConfiguration().screenWidthDp >= 600;
+        int contentW = wide ? dp(640) : MATCH;
+
+        TextView para = new TextView(this);
+        para.setText("Now you can browse privately, and other people who use this device won't see your activity. "
+                + "However, downloads and bookmarks will be saved.");
+        para.setTextSize(14);
+        para.setTextColor(0xFFBDC1C6);
+        para.setLineSpacing(0, 1.25f);
+        col.addView(para, new LinearLayout.LayoutParams(contentW, WRAP));
+
+        LinearLayout cols = new LinearLayout(this);
+        cols.setOrientation(wide ? LinearLayout.HORIZONTAL : LinearLayout.VERTICAL);
+        LinearLayout.LayoutParams a = wide ? new LinearLayout.LayoutParams(0, WRAP, 1f)
+                : new LinearLayout.LayoutParams(MATCH, WRAP);
+        LinearLayout.LayoutParams b = wide ? new LinearLayout.LayoutParams(0, WRAP, 1f)
+                : new LinearLayout.LayoutParams(MATCH, WRAP);
+        a.topMargin = dp(22);
+        b.topMargin = dp(22);
+        cols.addView(infoBlock("Ice Cool won't save the following information:",
+                new String[]{"Your browsing history", "Cookies and site data", "Information entered in forms"}), a);
+        cols.addView(infoBlock("Your activity might still be visible to:",
+                new String[]{"Websites you visit", "Your employer or school", "Your internet service provider"}), b);
+        col.addView(cols, new LinearLayout.LayoutParams(contentW, WRAP));
+
+        TextView note = new TextView(this);
+        note.setText("Screenshots and screen recording are blocked in a private window. "
+                + "Closing all private tabs (or pressing back) deletes everything from this session.");
+        note.setTextSize(13);
+        note.setTextColor(0xFF8AB4F8);
+        note.setLineSpacing(0, 1.2f);
+        LinearLayout.LayoutParams nlp = new LinearLayout.LayoutParams(contentW, WRAP);
+        nlp.topMargin = dp(26);
+        col.addView(note, nlp);
+
+        sv.addView(col, new ViewGroup.LayoutParams(MATCH, WRAP));
+        return sv;
+    }
+
+    private View infoBlock(String heading, String[] items) {
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setPadding(0, 0, dp(12), dp(8));
+        TextView h = new TextView(this);
+        h.setText(heading);
+        h.setTextSize(14);
+        h.setTextColor(0xFFE8EAED);
+        box.addView(h, new LinearLayout.LayoutParams(MATCH, WRAP));
+        for (String it : items) {
+            TextView t = new TextView(this);
+            t.setText("\u2022  " + it);
+            t.setTextSize(14);
+            t.setTextColor(0xFFBDC1C6);
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(MATCH, WRAP);
+            lp.topMargin = dp(6);
+            box.addView(t, lp);
+        }
+        return box;
     }
 
     private View buildShortcut(String name, String url, String domain, int ring) {
@@ -984,6 +1249,8 @@ public class MainActivity extends AppCompatActivity {
         label.setTextColor(0xFF3C4043);
         label.setTextSize(11);
         label.setSingleLine(true);
+        label.setEllipsize(TextUtils.TruncateAt.END);
+        label.setMaxWidth(dp(76));
         LinearLayout.LayoutParams llp = new LinearLayout.LayoutParams(WRAP, WRAP);
         llp.topMargin = dp(6);
         tile.addView(label, llp);
@@ -998,7 +1265,7 @@ public class MainActivity extends AppCompatActivity {
     private FrameLayout buildTabSwitcher() {
         FrameLayout sw = new FrameLayout(this);
         sw.setBackground(new GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM,
-                new int[]{0xFFEAF2FF, 0xFFFBEFFA}));
+                new int[]{cSwA, cSwB}));
         sw.setClickable(true);
 
         LinearLayout col = new LinearLayout(this);
@@ -1025,7 +1292,7 @@ public class MainActivity extends AppCompatActivity {
         switcherTitle = new TextView(this);
         switcherTitle.setTextSize(18);
         switcherTitle.setTypeface(Typeface.DEFAULT_BOLD);
-        switcherTitle.setTextColor(0xFF283593);
+        switcherTitle.setTextColor(cTitle);
         switcherTitle.setPadding(dp(16), 0, 0, 0);
         header.addView(switcherTitle, new LinearLayout.LayoutParams(0, WRAP, 1f));
 
@@ -1073,7 +1340,7 @@ public class MainActivity extends AppCompatActivity {
 
         LinearLayout card = new LinearLayout(this);
         card.setOrientation(LinearLayout.VERTICAL);
-        card.setBackground(roundBg(PASTELS[index % PASTELS.length], 20, BLUE, active ? 2.5f : 0));
+        card.setBackground(roundBg(cCard != 0 ? cCard : PASTELS[index % PASTELS.length], 20, BLUE, active ? 2.5f : 0));
         card.setElevation(dp(active ? 4 : 1));
         card.setPadding(dp(8), dp(6), dp(8), dp(8));
         card.setOnClickListener(v -> {
@@ -1100,7 +1367,7 @@ public class MainActivity extends AppCompatActivity {
         String shown = isHome ? "New tab" : (tab.title != null && !tab.title.isEmpty() ? tab.title : tab.url);
         t.setText(shown);
         t.setTextSize(13);
-        t.setTextColor(0xFF202124);
+        t.setTextColor(cText);
         t.setSingleLine(true);
         t.setEllipsize(TextUtils.TruncateAt.END);
         t.setPadding(dp(8), 0, dp(2), 0);
@@ -1175,7 +1442,7 @@ public class MainActivity extends AppCompatActivity {
     private LinearLayout newMenuBox() {
         LinearLayout menu = new LinearLayout(this);
         menu.setOrientation(LinearLayout.VERTICAL);
-        menu.setBackground(roundBg(Color.WHITE, 20, 0, 0));
+        menu.setBackground(roundBg(cMenuBg, 20, 0, 0));
         menu.setElevation(dp(8));
         menu.setPadding(0, dp(8), 0, dp(8));
         return menu;
@@ -1208,6 +1475,17 @@ public class MainActivity extends AppCompatActivity {
             dismissMenu();
             createNewTab("");
         }));
+        if (privateMode) {
+            menu.addView(menuRow(IconView.CLOSE, "Close private window", 0xFFD93025, v -> {
+                dismissMenu();
+                exitPrivateWindow();
+            }));
+        } else {
+            menu.addView(menuRow(IconView.PRIVATE, "New private window", 0xFF8E24AA, v -> {
+                dismissMenu();
+                openPrivateWindow();
+            }));
+        }
         menu.addView(menuRow(IconView.CLOSEALL, "Close all tabs", 0xFFF4511E, v -> {
             dismissMenu();
             closeAllTabs();
@@ -1229,14 +1507,16 @@ public class MainActivity extends AppCompatActivity {
                 startDownload(t.url, t.webView.getSettings().getUserAgentString(), null, null);
             }
         }));
-        menu.addView(menuRow(IconView.INSTALL, "Install & create shortcut", 0xFF7C4DFF, v -> {
-            dismissMenu();
-            startInstallFlow();
-        }));
-        menu.addView(menuRow(IconView.PIN, "Pin this tab to home screen", 0xFFE91E63, v -> {
-            dismissMenu();
-            pinTab(currentTab());
-        }));
+        if (!privateMode) {
+            menu.addView(menuRow(IconView.INSTALL, "Install & create shortcut", 0xFF7C4DFF, v -> {
+                dismissMenu();
+                startInstallFlow();
+            }));
+            menu.addView(menuRow(IconView.PIN, "Pin to Ice Cool home", 0xFFE91E63, v -> {
+                dismissMenu();
+                pinToBrowserHome(currentTab());
+            }));
+        }
 
         // Desktop site (per tab)
         final boolean desktop = cur != null && desktopTabs.contains(cur);
@@ -1254,7 +1534,7 @@ public class MainActivity extends AppCompatActivity {
         TextView zl = new TextView(this);
         zl.setText("Zoom");
         zl.setTextSize(16);
-        zl.setTextColor(0xFF202124);
+        zl.setTextColor(cText);
         zl.setPadding(dp(16), 0, 0, 0);
         zoom.addView(zl, new LinearLayout.LayoutParams(0, WRAP, 1f));
         final TextView zv = new TextView(this);
@@ -1262,7 +1542,7 @@ public class MainActivity extends AppCompatActivity {
         zv.setText(shownZoom + "%");
         zv.setTextSize(15);
         zv.setGravity(Gravity.CENTER);
-        zv.setTextColor(0xFF202124);
+        zv.setTextColor(cText);
 
         IconView minus = new IconView(this, IconView.MINUS, INK);
         minus.setPadding(dp(8), dp(8), dp(8), dp(8));
@@ -1283,20 +1563,28 @@ public class MainActivity extends AppCompatActivity {
         dlp.setMargins(dp(16), dp(4), dp(16), dp(4));
         menu.addView(div, dlp);
 
-        menu.addView(menuRow(IconView.TRASH, "Clear all cookies & data", 0xFFD93025, v -> {
-            dismissMenu();
-            confirmClearData();
-        }));
+        if (!privateMode) {
+            menu.addView(menuRow(IconView.TRASH, "Clear all cookies & data", 0xFFD93025, v -> {
+                dismissMenu();
+                confirmClearData();
+            }));
+        }
 
         openPopup(anchor, menu, 300, true);
     }
 
     private void showTabMenu(View anchor, final TabManager.TabItem tab) {
         LinearLayout menu = newMenuBox();
-        menu.addView(menuRow(IconView.PIN, "Pin to home screen", 0xFFE91E63, v -> {
-            dismissMenu();
-            pinTab(tab);
-        }));
+        if (!privateMode) {
+            menu.addView(menuRow(IconView.PIN, "Pin to Ice Cool home", 0xFFE91E63, v -> {
+                dismissMenu();
+                pinToBrowserHome(tab);
+            }));
+            menu.addView(menuRow(IconView.INSTALL, "Add to phone home screen", 0xFF7C4DFF, v -> {
+                dismissMenu();
+                pinTab(tab);
+            }));
+        }
         menu.addView(menuRow(IconView.TRASH, "Clear this site's data & cookies", 0xFFD93025, v -> {
             dismissMenu();
             clearSiteData(tab);
@@ -1319,7 +1607,7 @@ public class MainActivity extends AppCompatActivity {
         TextView t = new TextView(this);
         t.setText(label);
         t.setTextSize(16);
-        t.setTextColor(color == 0xFFD93025 ? color : 0xFF202124);
+        t.setTextColor(color == 0xFFD93025 ? color : cText);
         t.setPadding(dp(16), 0, 0, 0);
         r.addView(t, new LinearLayout.LayoutParams(0, WRAP, 1f));
         r.setOnClickListener(l);
@@ -1347,7 +1635,16 @@ public class MainActivity extends AppCompatActivity {
     // ------------------------------------------------------------------ page zoom (whole page, per site)
 
     private int zoomFor(String host) {
+        if (privateMode) {
+            Integer z = privateZoom.get(host);
+            return z == null ? 100 : z;
+        }
         return prefs.getInt("zoom_" + host, 100);
+    }
+
+    private void setZoomFor(String host, int z) {
+        if (privateMode) privateZoom.put(host, z);
+        else prefs.edit().putInt("zoom_" + host, z).apply();
     }
 
     private void applyZoom(WebView v, String url) {
@@ -1371,7 +1668,7 @@ public class MainActivity extends AppCompatActivity {
         }
         idx = Math.max(0, Math.min(ZOOM_STEPS.length - 1, idx + dir));
         int z = ZOOM_STEPS[idx];
-        prefs.edit().putInt("zoom_" + host, z).apply();
+        setZoomFor(host, z);
         label.setText(z + "%");
         for (TabManager.TabItem other : tabManager.getTabs()) {
             if (other.url != null && hostOf(other.url).equals(host)) applyZoom(other.webView, other.url);
@@ -1524,6 +1821,10 @@ public class MainActivity extends AppCompatActivity {
         tabManager.removeTab(index);
 
         if (tabManager.getTabs().isEmpty()) {
+            if (privateMode) {
+                exitPrivateWindow();
+                return;
+            }
             createNewTab("");
             hideTabSwitcher();
             return;
@@ -1538,6 +1839,10 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void closeAllTabs() {
+        if (privateMode) {
+            exitPrivateWindow();
+            return;
+        }
         for (TabManager.TabItem t : new ArrayList<>(tabManager.getTabs())) destroyTab(t);
         thumbs.clear();
         tabManager.clearAllTabs();
@@ -1659,12 +1964,13 @@ public class MainActivity extends AppCompatActivity {
         s.setLoadWithOverviewMode(true);
         s.setBuiltInZoomControls(true);
         s.setDisplayZoomControls(false);
-        s.setCacheMode(WebSettings.LOAD_DEFAULT);
+        s.setCacheMode(privateMode ? WebSettings.LOAD_NO_CACHE : WebSettings.LOAD_DEFAULT);
+        if (privateMode) s.setSaveFormData(false);
         if (mobileUA != null) s.setUserAgentString(mobileUA);
         webView.setLayerType(View.LAYER_TYPE_HARDWARE, null);
 
         CookieManager.getInstance().setAcceptCookie(true);
-        CookieManager.getInstance().setAcceptThirdPartyCookies(webView, true);
+        CookieManager.getInstance().setAcceptThirdPartyCookies(webView, !privateMode);
 
         webView.addJavascriptInterface(new PwaBridge(), "IceBridge");
         webView.setDownloadListener((url, ua, cd, mime, len) -> startDownload(url, ua, cd, mime));
@@ -1724,6 +2030,15 @@ public class MainActivity extends AppCompatActivity {
             @Override
             public void onProgressChanged(WebView view, int newProgress) {
                 if (isActive(view)) showProgress(newProgress);
+            }
+
+            @Override
+            public void onReceivedIcon(WebView view, Bitmap icon) {
+                String h = hostOf(view.getUrl() == null ? "" : view.getUrl());
+                if (icon != null && !h.isEmpty()) {
+                    faviconCache.put(h, icon);
+                    scheduleStripRefresh();
+                }
             }
 
             @Override
@@ -1817,6 +2132,7 @@ public class MainActivity extends AppCompatActivity {
             if (fallback != null) fallback.setVisibility(View.GONE);
             return;
         }
+        if (privateMode) return;
         new Thread(() -> {
             final Bitmap fb = downloadBitmap("https://www.google.com/s2/favicons?domain=" + domain + "&sz=128");
             if (fb != null) {
@@ -1868,6 +2184,11 @@ public class MainActivity extends AppCompatActivity {
                 return;
             }
         }
+        if (privateMode) {
+            if (tabManager.getTabs().size() > 1) closeTab(tabManager.getActiveTabIdx());
+            else exitPrivateWindow();
+            return;
+        }
         super.onBackPressed();
     }
 
@@ -1876,7 +2197,7 @@ public class MainActivity extends AppCompatActivity {
     /** Simple vector-style icons drawn with Canvas (no drawable files needed). */
     static class IconView extends View {
         static final int HOME = 0, REFRESH = 1, DOTS = 2, PLUS = 3, CLOSE = 4, MINUS = 5,
-                DOWNLOAD = 6, TRASH = 7, SEARCH = 8, CLOSEALL = 9, INSTALL = 10, DESKTOP = 11, PIN = 12;
+                DOWNLOAD = 6, TRASH = 7, SEARCH = 8, CLOSEALL = 9, INSTALL = 10, DESKTOP = 11, PIN = 12, PRIVATE = 13;
         private final int type;
         private final int color;
         private final Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
@@ -1967,6 +2288,17 @@ public class MainActivity extends AppCompatActivity {
                     c.drawPath(path, p);
                     c.drawLine(10.5f, 18.5f, 13.5f, 18.5f, p);
                     break;
+                case PRIVATE:
+                    path.moveTo(7, 11);
+                    path.lineTo(9, 4.5f);
+                    path.lineTo(15, 4.5f);
+                    path.lineTo(17, 11);
+                    c.drawPath(path, p);
+                    c.drawLine(3.5f, 11, 20.5f, 11, p);
+                    c.drawCircle(8, 16.5f, 2.6f, p);
+                    c.drawCircle(16, 16.5f, 2.6f, p);
+                    c.drawLine(10.6f, 16, 13.4f, 16, p);
+                    break;
                 case DESKTOP:
                     c.drawRoundRect(new RectF(3, 4, 21, 16), 2, 2, p);
                     c.drawLine(8, 20, 16, 20, p);
@@ -2000,6 +2332,38 @@ public class MainActivity extends AppCompatActivity {
                     c.drawLine(15.5f, 15.5f, 21, 21, p);
                     break;
             }
+        }
+    }
+
+    /** Hat + glasses badge for the private window page. */
+    static class PrivateBadge extends View {
+        private final Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
+
+        PrivateBadge(Context c) {
+            super(c);
+        }
+
+        @Override
+        protected void onDraw(Canvas c) {
+            float sc = Math.min(getWidth(), getHeight()) / 100f;
+            c.scale(sc, sc);
+            p.setStyle(Paint.Style.FILL);
+            p.setColor(0xFFE8EAED);
+            c.drawCircle(50, 50, 50, p);
+            p.setColor(0xFF3C4043);
+            Path crown = new Path();
+            crown.moveTo(30, 44);
+            crown.lineTo(36, 21);
+            crown.lineTo(64, 21);
+            crown.lineTo(70, 44);
+            crown.close();
+            c.drawPath(crown, p);
+            c.drawRoundRect(new RectF(17, 42, 83, 50), 4, 4, p);
+            p.setStyle(Paint.Style.STROKE);
+            p.setStrokeWidth(5f);
+            c.drawCircle(36, 66, 9, p);
+            c.drawCircle(64, 66, 9, p);
+            c.drawLine(45, 64, 55, 64, p);
         }
     }
 
