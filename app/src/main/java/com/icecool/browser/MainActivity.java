@@ -6,6 +6,7 @@ import android.app.AlertDialog;
 import android.app.DownloadManager;
 import android.content.Context;
 import android.content.Intent;
+import android.content.SharedPreferences;
 import android.content.res.ColorStateList;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
@@ -27,6 +28,7 @@ import android.os.Bundle;
 import android.os.Environment;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.Message;
 import android.text.TextUtils;
 import android.util.TypedValue;
 import android.view.Gravity;
@@ -48,6 +50,7 @@ import android.webkit.WebView;
 import android.webkit.WebViewClient;
 import android.widget.EditText;
 import android.widget.FrameLayout;
+import android.widget.HorizontalScrollView;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.PopupWindow;
@@ -62,6 +65,7 @@ import androidx.core.content.pm.ShortcutInfoCompat;
 import androidx.core.content.pm.ShortcutManagerCompat;
 import androidx.core.graphics.drawable.IconCompat;
 
+import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.io.InputStream;
@@ -70,9 +74,14 @@ import java.net.URL;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 public class MainActivity extends AppCompatActivity {
 
@@ -81,6 +90,7 @@ public class MainActivity extends AppCompatActivity {
     private static final int BLUE = 0xFF2979FF;
     private static final int INK = 0xFF3C4043;
     private static final int MAX_TABS = 20;
+    private static final int[] ZOOM_STEPS = {50, 67, 75, 80, 90, 100, 110, 125, 150, 175, 200, 250, 300};
 
     private static final String EXTRA_MODE = "ice_mode";
     private static final String EXTRA_NAME = "ice_name";
@@ -105,7 +115,8 @@ public class MainActivity extends AppCompatActivity {
                     + "}else{fin();}}catch(e){fin();}"
                     + "var link=document.querySelector('link[rel~=\"manifest\"]');"
                     + "if(link&&link.href){fetch(link.href).then(function(r){return r.json();}).then(function(m){"
-                    + "info.manifest=true;info.name=m.short_name||m.name||'';if(m.theme_color&&!info.theme)info.theme=m.theme_color;if(m.background_color)info.bg=m.background_color;"
+                    + "info.manifest=true;info.name=m.short_name||m.name||'';"
+                    + "if(m.theme_color&&!info.theme)info.theme=m.theme_color;if(m.background_color)info.bg=m.background_color;"
                     + "if(m.start_url){try{info.start=new URL(m.start_url,link.href).href;}catch(e){}}"
                     + "if(m.icons&&m.icons.length){var best=null,bs=-1,bm=null,bms=-1;"
                     + "for(var i=0;i<m.icons.length;i++){var ic=m.icons[i];if(/\\.svg(\\?|$)/i.test(ic.src||''))continue;"
@@ -125,7 +136,8 @@ public class MainActivity extends AppCompatActivity {
                     + "setInterval(s,1500);})();";
 
     private FrameLayout root, webContainer, tabSwitcher;
-    private LinearLayout tabGrid;
+    private LinearLayout tabGrid, tabStrip;
+    private HorizontalScrollView tabStripScroll;
     private ScrollView homeView;
     private EditText etSearchUrl, etHomeSearch;
     private TextView btnTabCounter, switcherTitle;
@@ -133,18 +145,24 @@ public class MainActivity extends AppCompatActivity {
     private View accentLine;
     private TabManager tabManager;
     private PopupWindow menuPopup;
+    private SharedPreferences prefs;
 
     private View customView;
     private WebChromeClient.CustomViewCallback customViewCallback;
-    private int currentZoomLevel = 100;
 
     private boolean appMode = false;
     private WebView appWebView;
     private String pendingToken = null;
+    private String mobileUA = null;
+    private String desktopUA = null;
+    private boolean stripRefreshPending = false;
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
 
     private final Map<TabManager.TabItem, Bitmap> thumbs = new HashMap<>();
     private final Map<String, Bitmap> faviconCache = Collections.synchronizedMap(new HashMap<String, Bitmap>());
+    private final Set<TabManager.TabItem> desktopTabs = new HashSet<>();
+    private final Set<TabManager.TabItem> popupTabs = new HashSet<>();
+    private final Set<TabManager.TabItem> lazyTabs = new HashSet<>();
 
     // ------------------------------------------------------------------ lifecycle
 
@@ -154,6 +172,8 @@ public class MainActivity extends AppCompatActivity {
         setContentView(R.layout.activity_main);
         root = findViewById(R.id.root);
         tabManager = TabManager.getInstance();
+        prefs = getSharedPreferences("icecool", MODE_PRIVATE);
+        computeUserAgents();
 
         Window w = getWindow();
         w.setStatusBarColor(Color.WHITE);
@@ -179,6 +199,7 @@ public class MainActivity extends AppCompatActivity {
         }
 
         buildUi();
+        if (tabManager.getTabs().isEmpty()) restoreTabs();
         if (savedInstanceState == null && handleWebIntent(in)) {
             // opened a shortcut / link in a new tab
         } else if (tabManager.getTabs().isEmpty()) {
@@ -195,6 +216,12 @@ public class MainActivity extends AppCompatActivity {
         if (!appMode && handleWebIntent(intent)) {
             if (tabSwitcher != null) tabSwitcher.setVisibility(View.GONE);
         }
+    }
+
+    @Override
+    protected void onStop() {
+        super.onStop();
+        if (!appMode) saveTabs();
     }
 
     @Override
@@ -232,6 +259,50 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
+    private void computeUserAgents() {
+        String def = WebSettings.getDefaultUserAgent(this);
+        mobileUA = def.replace("; wv", "").replace(" Version/4.0", "");
+        Matcher m = Pattern.compile("Chrome/([\\d.]+)").matcher(def);
+        String ver = m.find() ? m.group(1) : "120.0.0.0";
+        desktopUA = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/" + ver + " Safari/537.36";
+    }
+
+    // ------------------------------------------------------------------ save / restore tabs (tabs never vanish)
+
+    private void saveTabs() {
+        try {
+            JSONArray arr = new JSONArray();
+            for (TabManager.TabItem t : tabManager.getTabs()) {
+                String u = t.url == null ? "" : t.url;
+                if (u.startsWith("about:")) u = "";
+                arr.put(u);
+            }
+            prefs.edit().putString("tabs", arr.toString()).putInt("active", tabManager.getActiveTabIdx()).apply();
+        } catch (Exception ignored) {
+        }
+    }
+
+    private void restoreTabs() {
+        try {
+            String js = prefs.getString("tabs", null);
+            if (js == null) return;
+            JSONArray arr = new JSONArray(js);
+            if (arr.length() == 0) return;
+            for (int i = 0; i < arr.length() && i < MAX_TABS; i++) {
+                String u = arr.optString(i, "");
+                WebView wv = new WebView(this);
+                setupWebView(wv);
+                TabManager.TabItem tab = new TabManager.TabItem(u, u.isEmpty() ? "New Tab" : u, wv);
+                tabManager.addTab(tab);
+                if (!u.isEmpty()) lazyTabs.add(tab); // loads only when you open it (fast start)
+            }
+            int active = prefs.getInt("active", 0);
+            int max = tabManager.getTabs().size() - 1;
+            tabManager.setActiveTabIdx(Math.max(0, Math.min(active, max)));
+        } catch (Exception ignored) {
+        }
+    }
+
     // ------------------------------------------------------------------ standalone app mode (installed PWA)
 
     private void startAppMode(Intent in) {
@@ -246,7 +317,6 @@ public class MainActivity extends AppCompatActivity {
             } catch (Throwable ignored) {
             }
         }
-
         applyBarColor(theme);
 
         appWebView = new WebView(this);
@@ -305,7 +375,7 @@ public class MainActivity extends AppCompatActivity {
         return l > 0.6;
     }
 
-    // ------------------------------------------------------------------ install / create shortcut
+    // ------------------------------------------------------------------ install / pin shortcuts
 
     /** Called from JS inside the page. Only accepted while a check is pending (token must match). */
     public class PwaBridge {
@@ -371,7 +441,7 @@ public class MainActivity extends AppCompatActivity {
 
         TextView msg = new TextView(this);
         msg.setText(pwa
-                ? "Ye site installable app hai (manifest + service worker mila). Install karne par ye full screen me, bina URL bar ke, native app jaisi khulegi."
+                ? "Ye site PWA hai (manifest + service worker mila). Home screen icon se ye full screen me, bina URL bar ke, app jaisi khulegi."
                 : "Is site me manifest/service worker nahi hai, isliye home screen par shortcut banega. Shortcut dabane par site browser me khulegi.");
         msg.setTextSize(14);
         msg.setTextColor(0xFF5F6368);
@@ -397,6 +467,16 @@ public class MainActivity extends AppCompatActivity {
                 .show();
     }
 
+    private void pinTab(TabManager.TabItem tab) {
+        if (tab == null || tab.url == null || tab.url.isEmpty()) {
+            toast("Ye khali tab hai, pehle koi site kholo");
+            return;
+        }
+        String host = hostOf(tab.url);
+        String name = (tab.title != null && !tab.title.isEmpty() && !tab.title.equals(tab.url)) ? tab.title : host;
+        createShortcut(name, tab.url, "", false, "", host, false, "");
+    }
+
     private void createShortcut(final String name, final String url, final String iconUrl,
                                 final boolean app, final String theme, final String host,
                                 final boolean maskable, final String bg) {
@@ -404,9 +484,9 @@ public class MainActivity extends AppCompatActivity {
         new Thread(() -> {
             Bitmap src = iconUrl.isEmpty() ? null : downloadBitmap(iconUrl);
             if (src == null && !host.isEmpty()) {
-                src = downloadBitmap("https://www.google.com/s2/favicons?domain=" + host + "&sz=128");
+                src = downloadBitmap("https://www.google.com/s2/favicons?domain=" + host + "&sz=256");
             }
-            final Bitmap icon = composeAdaptive(src, maskable, bg, name);
+            final Bitmap icon = composeRound(src, maskable, bg, name);
             runOnUiThread(() -> pinShortcut(name, url, icon, app, theme));
         }).start();
     }
@@ -433,7 +513,7 @@ public class MainActivity extends AppCompatActivity {
             ShortcutInfoCompat info = new ShortcutInfoCompat.Builder(this, id)
                     .setShortLabel(name)
                     .setLongLabel(name)
-                    .setIcon(IconCompat.createWithAdaptiveBitmap(icon))
+                    .setIcon(IconCompat.createWithBitmap(icon))
                     .setIntent(i)
                     .build();
             ShortcutManagerCompat.requestPinShortcut(this, info, null);
@@ -443,19 +523,29 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
-    private Bitmap composeAdaptive(Bitmap src, boolean maskable, String bgCss, String name) {
-        int s = 432; // adaptive icon canvas (108dp x4); launcher applies its own mask
+    /** Round (circle) icon with transparent corners. */
+    private Bitmap composeRound(Bitmap src, boolean maskable, String bgCss, String name) {
+        int s = 256;
         Bitmap out = Bitmap.createBitmap(s, s, Bitmap.Config.ARGB_8888);
         Canvas c = new Canvas(out);
         Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
+        Path clip = new Path();
+        clip.addCircle(s / 2f, s / 2f, s / 2f, Path.Direction.CW);
+        c.save();
+        c.clipPath(clip);
         if (src != null) {
-            int bg = Color.WHITE;
             int corner = src.getPixel(0, 0);
+            boolean opaque = Color.alpha(corner) >= 250;
             Integer parsed = parseCssColor(bgCss);
-            if (Color.alpha(corner) >= 250) bg = corner;
-            else if (parsed != null) bg = parsed;
-            c.drawColor(bg);
-            int t = (int) (s * (maskable ? 0.84f : 0.58f));
+            float scale;
+            if (opaque) {
+                c.drawColor(corner);
+                scale = maskable ? 1f : 0.86f;
+            } else {
+                c.drawColor(parsed != null ? parsed : Color.WHITE);
+                scale = maskable ? 0.9f : 0.62f;
+            }
+            int t = (int) (s * scale);
             Bitmap sc = Bitmap.createScaledBitmap(src, t, t, true);
             c.drawBitmap(sc, (s - t) / 2f, (s - t) / 2f, null);
         } else {
@@ -464,11 +554,12 @@ public class MainActivity extends AppCompatActivity {
             p.setShader(null);
             p.setColor(Color.WHITE);
             p.setTextAlign(Paint.Align.CENTER);
-            p.setTextSize(190);
+            p.setTextSize(140);
             p.setTypeface(Typeface.DEFAULT_BOLD);
             String letter = name == null || name.isEmpty() ? "I" : name.substring(0, 1).toUpperCase();
             c.drawText(letter, s / 2f, s / 2f - (p.descent() + p.ascent()) / 2f, p);
         }
+        c.restore();
         return out;
     }
 
@@ -487,7 +578,7 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
-    // ------------------------------------------------------------------ UI building
+    // ------------------------------------------------------------------ UI helpers
 
     private int dp(float v) {
         return (int) TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, v, getResources().getDisplayMetrics());
@@ -552,6 +643,7 @@ public class MainActivity extends AppCompatActivity {
         main.setOrientation(LinearLayout.VERTICAL);
         root.addView(main, new FrameLayout.LayoutParams(MATCH, MATCH));
 
+        main.addView(buildTabStripBar());
         main.addView(buildTopBar());
 
         FrameLayout line = new FrameLayout(this);
@@ -575,6 +667,118 @@ public class MainActivity extends AppCompatActivity {
         root.addView(tabSwitcher, new FrameLayout.LayoutParams(MATCH, MATCH));
     }
 
+    // ------------------------------------------------------------------ Chrome-like tab strip (top)
+
+    private View buildTabStripBar() {
+        LinearLayout bar = new LinearLayout(this);
+        bar.setOrientation(LinearLayout.HORIZONTAL);
+        bar.setGravity(Gravity.BOTTOM);
+        bar.setBackgroundColor(0xFFDCE1EC);
+        bar.setPadding(dp(6), dp(6), dp(4), 0);
+        bar.setLayoutParams(new LinearLayout.LayoutParams(MATCH, dp(44)));
+
+        tabStripScroll = new HorizontalScrollView(this);
+        tabStripScroll.setHorizontalScrollBarEnabled(false);
+        tabStripScroll.setOverScrollMode(View.OVER_SCROLL_NEVER);
+        tabStrip = new LinearLayout(this);
+        tabStrip.setOrientation(LinearLayout.HORIZONTAL);
+        tabStrip.setGravity(Gravity.BOTTOM);
+        tabStripScroll.addView(tabStrip, new ViewGroup.LayoutParams(WRAP, MATCH));
+        bar.addView(tabStripScroll, new LinearLayout.LayoutParams(0, MATCH, 1f));
+
+        IconView plus = new IconView(this, IconView.PLUS, 0xFF3C4043);
+        plus.setPadding(dp(7), dp(7), dp(7), dp(7));
+        plus.setBackground(ripple(true));
+        plus.setOnClickListener(v -> createNewTab(""));
+        LinearLayout.LayoutParams plp = new LinearLayout.LayoutParams(dp(34), dp(34));
+        plp.setMargins(dp(4), 0, dp(2), dp(2));
+        bar.addView(plus, plp);
+        return bar;
+    }
+
+    private void scheduleStripRefresh() {
+        if (tabStrip == null || stripRefreshPending) return;
+        stripRefreshPending = true;
+        mainHandler.postDelayed(() -> {
+            stripRefreshPending = false;
+            refreshTabStrip(false);
+        }, 300);
+    }
+
+    private void refreshTabStrip(boolean scrollToActive) {
+        if (tabStrip == null) return;
+        tabStrip.removeAllViews();
+        List<TabManager.TabItem> tabs = tabManager.getTabs();
+        int active = tabManager.getActiveTabIdx();
+        for (int i = 0; i < tabs.size(); i++) {
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(dp(168), dp(36));
+            lp.setMargins(dp(1), 0, dp(1), 0);
+            tabStrip.addView(buildStripTab(tabs.get(i), i == active), lp);
+        }
+        if (scrollToActive) {
+            final int a = active;
+            tabStripScroll.post(() -> {
+                View v = tabStrip.getChildAt(a);
+                if (v != null) tabStripScroll.smoothScrollTo(Math.max(0, v.getLeft() - dp(40)), 0);
+            });
+        }
+    }
+
+    private View buildStripTab(final TabManager.TabItem tab, boolean active) {
+        boolean isHome = tab.url == null || tab.url.isEmpty();
+        LinearLayout chip = new LinearLayout(this);
+        chip.setOrientation(LinearLayout.HORIZONTAL);
+        chip.setGravity(Gravity.CENTER_VERTICAL);
+        chip.setPadding(dp(10), 0, dp(4), 0);
+        float r = dp(12);
+        GradientDrawable bg = new GradientDrawable();
+        bg.setColor(active ? Color.WHITE : 0x00FFFFFF);
+        bg.setCornerRadii(new float[]{r, r, r, r, 0, 0, 0, 0});
+        chip.setBackground(bg);
+
+        ImageView fav = new ImageView(this);
+        fav.setBackground(ovalBg(isHome ? 0xFF8AB4F8 : 0xFFFFFFFF, 0, 0));
+        fav.setPadding(dp(1), dp(1), dp(1), dp(1));
+        chip.addView(fav, new LinearLayout.LayoutParams(dp(16), dp(16)));
+
+        TextView t = new TextView(this);
+        t.setText(isHome ? "New tab" : (tab.title != null && !tab.title.isEmpty() ? tab.title : tab.url));
+        t.setTextSize(12);
+        t.setTextColor(active ? 0xFF202124 : 0xFF5F6368);
+        t.setSingleLine(true);
+        t.setEllipsize(TextUtils.TruncateAt.END);
+        t.setPadding(dp(8), 0, dp(4), 0);
+        chip.addView(t, new LinearLayout.LayoutParams(0, WRAP, 1f));
+
+        IconView close = new IconView(this, IconView.CLOSE, INK);
+        close.setPadding(dp(6), dp(6), dp(6), dp(6));
+        close.setOnClickListener(v -> {
+            int idx = tabManager.getTabs().indexOf(tab);
+            if (idx >= 0) closeTab(idx);
+        });
+        chip.addView(close, new LinearLayout.LayoutParams(dp(24), dp(24)));
+
+        chip.setOnClickListener(v -> {
+            int idx = tabManager.getTabs().indexOf(tab);
+            if (idx >= 0) {
+                tabManager.setActiveTabIdx(idx);
+                renderActiveTab();
+            }
+        });
+        chip.setOnLongClickListener(v -> {
+            showTabMenu(v, tab);
+            return true;
+        });
+
+        if (!isHome) {
+            String host = hostOf(tab.url);
+            if (!host.isEmpty()) loadFavicon(host, fav, null);
+        }
+        return chip;
+    }
+
+    // ------------------------------------------------------------------ top bar
+
     private View buildTopBar() {
         LinearLayout bar = new LinearLayout(this);
         bar.setOrientation(LinearLayout.HORIZONTAL);
@@ -582,7 +786,7 @@ public class MainActivity extends AppCompatActivity {
         bar.setBackgroundColor(Color.WHITE);
         bar.setPadding(dp(6), 0, dp(6), 0);
         bar.setElevation(dp(2));
-        bar.setLayoutParams(new LinearLayout.LayoutParams(MATCH, dp(56)));
+        bar.setLayoutParams(new LinearLayout.LayoutParams(MATCH, dp(54)));
 
         bar.addView(iconButton(IconView.HOME, 0xFF2979FF, v -> navigateHome()), new LinearLayout.LayoutParams(dp(40), dp(40)));
         bar.addView(iconButton(IconView.REFRESH, 0xFF00ACC1, v -> refreshCurrentTab()), new LinearLayout.LayoutParams(dp(40), dp(40)));
@@ -642,6 +846,8 @@ public class MainActivity extends AppCompatActivity {
         return false;
     }
 
+    // ------------------------------------------------------------------ home screen
+
     private ScrollView buildHomeView() {
         ScrollView sv = new ScrollView(this);
         sv.setFillViewport(true);
@@ -655,7 +861,6 @@ public class MainActivity extends AppCompatActivity {
 
         col.addView(new IceScene(this), new LinearLayout.LayoutParams(MATCH, dp(220)));
 
-        // Big stylish title: ICE (heavy, cyan->blue) + cool (script, purple->pink->orange)
         LinearLayout titleRow = new LinearLayout(this);
         titleRow.setOrientation(LinearLayout.HORIZONTAL);
         titleRow.setGravity(Gravity.CENTER_VERTICAL);
@@ -723,15 +928,20 @@ public class MainActivity extends AppCompatActivity {
         cardLp.setMargins(dp(24), 0, dp(24), dp(24));
         col.addView(card, cardLp);
 
-        String[] names = {"YouTube", "Instagram", "Facebook", "X", "WhatsApp", "Google", "GitHub", "Wikipedia"};
+        String[] names = {"YouTube", "Instagram", "Facebook", "X", "WhatsApp", "Telegram", "Snapchat", "Reddit",
+                "LinkedIn", "Pinterest", "Amazon", "Flipkart", "Google", "GitHub", "Wikipedia", "Netflix"};
         String[] urls = {"https://www.youtube.com", "https://www.instagram.com", "https://www.facebook.com",
-                "https://x.com", "https://web.whatsapp.com", "https://www.google.com", "https://github.com",
-                "https://www.wikipedia.org"};
-        String[] domains = {"youtube.com", "instagram.com", "facebook.com", "x.com", "whatsapp.com",
-                "google.com", "github.com", "wikipedia.org"};
-        int[] rings = {0xFFFF1744, 0xFFE1306C, 0xFF1877F2, 0xFF212121, 0xFF25D366, 0xFF4285F4, 0xFF6E5494, 0xFF9E9E9E};
+                "https://x.com", "https://web.whatsapp.com", "https://web.telegram.org", "https://www.snapchat.com",
+                "https://www.reddit.com", "https://www.linkedin.com", "https://www.pinterest.com",
+                "https://www.amazon.in", "https://www.flipkart.com", "https://www.google.com",
+                "https://github.com", "https://www.wikipedia.org", "https://www.netflix.com"};
+        String[] domains = {"youtube.com", "instagram.com", "facebook.com", "x.com", "whatsapp.com", "telegram.org",
+                "snapchat.com", "reddit.com", "linkedin.com", "pinterest.com", "amazon.in", "flipkart.com",
+                "google.com", "github.com", "wikipedia.org", "netflix.com"};
+        int[] rings = {0xFFFF1744, 0xFFE1306C, 0xFF1877F2, 0xFF212121, 0xFF25D366, 0xFF229ED9, 0xFFFFC400, 0xFFFF4500,
+                0xFF0A66C2, 0xFFE60023, 0xFFFF9900, 0xFF2874F0, 0xFF4285F4, 0xFF6E5494, 0xFF9E9E9E, 0xFFE50914};
 
-        for (int r = 0; r < 2; r++) {
+        for (int r = 0; r < 4; r++) {
             LinearLayout row = new LinearLayout(this);
             row.setOrientation(LinearLayout.HORIZONTAL);
             for (int c = 0; c < 4; c++) {
@@ -782,6 +992,8 @@ public class MainActivity extends AppCompatActivity {
         loadFavicon(domain, icon, letter);
         return tile;
     }
+
+    // ------------------------------------------------------------------ tab switcher (grid)
 
     private FrameLayout buildTabSwitcher() {
         FrameLayout sw = new FrameLayout(this);
@@ -834,6 +1046,7 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void refreshTabGrid() {
+        if (tabGrid == null) return;
         tabGrid.removeAllViews();
         List<TabManager.TabItem> tabs = tabManager.getTabs();
         switcherTitle.setText(tabs.size() + (tabs.size() == 1 ? " tab" : " tabs"));
@@ -855,7 +1068,7 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
-    private View buildTabCard(TabManager.TabItem tab, int index, boolean active) {
+    private View buildTabCard(final TabManager.TabItem tab, int index, boolean active) {
         boolean isHome = tab.url == null || tab.url.isEmpty();
 
         LinearLayout card = new LinearLayout(this);
@@ -864,9 +1077,14 @@ public class MainActivity extends AppCompatActivity {
         card.setElevation(dp(active ? 4 : 1));
         card.setPadding(dp(8), dp(6), dp(8), dp(8));
         card.setOnClickListener(v -> {
-            tabManager.setActiveTabIdx(index);
+            int idx = tabManager.getTabs().indexOf(tab);
+            if (idx >= 0) tabManager.setActiveTabIdx(idx);
             hideTabSwitcher();
             renderActiveTab();
+        });
+        card.setOnLongClickListener(v -> {
+            showTabMenu(v, tab);
+            return true;
         });
 
         LinearLayout head = new LinearLayout(this);
@@ -885,12 +1103,20 @@ public class MainActivity extends AppCompatActivity {
         t.setTextColor(0xFF202124);
         t.setSingleLine(true);
         t.setEllipsize(TextUtils.TruncateAt.END);
-        t.setPadding(dp(8), 0, dp(4), 0);
+        t.setPadding(dp(8), 0, dp(2), 0);
         head.addView(t, new LinearLayout.LayoutParams(0, WRAP, 1f));
+
+        IconView more = new IconView(this, IconView.DOTS, INK);
+        more.setPadding(dp(6), dp(6), dp(6), dp(6));
+        more.setOnClickListener(v -> showTabMenu(v, tab));
+        head.addView(more, new LinearLayout.LayoutParams(dp(26), dp(26)));
 
         IconView close = new IconView(this, IconView.CLOSE, INK);
         close.setPadding(dp(4), dp(4), dp(4), dp(4));
-        close.setOnClickListener(v -> closeTab(index));
+        close.setOnClickListener(v -> {
+            int idx = tabManager.getTabs().indexOf(tab);
+            if (idx >= 0) closeTab(idx);
+        });
         head.addView(close, new LinearLayout.LayoutParams(dp(26), dp(26)));
         card.addView(head, new LinearLayout.LayoutParams(MATCH, dp(32)));
 
@@ -929,8 +1155,6 @@ public class MainActivity extends AppCompatActivity {
         return card;
     }
 
-    // ------------------------------------------------------------------ tab switcher show/hide
-
     private void showTabSwitcher() {
         captureCurrentThumb();
         refreshTabGrid();
@@ -946,31 +1170,50 @@ public class MainActivity extends AppCompatActivity {
         tabSwitcher.animate().alpha(0f).setDuration(120).withEndAction(() -> tabSwitcher.setVisibility(View.GONE)).start();
     }
 
-    // ------------------------------------------------------------------ menu
+    // ------------------------------------------------------------------ menus
 
-    private void showMenu(View anchor) {
-        if (menuPopup != null && menuPopup.isShowing()) menuPopup.dismiss();
-
-        FrameLayout wrapper = new FrameLayout(this);
-        wrapper.setPadding(dp(10), dp(10), dp(10), dp(14));
-
+    private LinearLayout newMenuBox() {
         LinearLayout menu = new LinearLayout(this);
         menu.setOrientation(LinearLayout.VERTICAL);
         menu.setBackground(roundBg(Color.WHITE, 20, 0, 0));
         menu.setElevation(dp(8));
         menu.setPadding(0, dp(8), 0, dp(8));
-        wrapper.addView(menu, new FrameLayout.LayoutParams(MATCH, WRAP));
+        return menu;
+    }
+
+    private void openPopup(View anchor, LinearLayout menu, int widthDp, boolean alignRight) {
+        dismissMenu();
+        ScrollView sv = new ScrollView(this);
+        sv.setClipToPadding(false);
+        sv.setPadding(dp(10), dp(10), dp(10), dp(14));
+        sv.addView(menu, new ViewGroup.LayoutParams(MATCH, WRAP));
+        menuPopup = new PopupWindow(sv, dp(widthDp), WRAP, true);
+        menuPopup.setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
+        if (alignRight) {
+            menuPopup.showAsDropDown(anchor, anchor.getWidth() - dp(widthDp) + dp(8), -anchor.getHeight() + dp(4));
+        } else {
+            menuPopup.showAsDropDown(anchor, 0, -dp(8));
+        }
+    }
+
+    private void dismissMenu() {
+        if (menuPopup != null && menuPopup.isShowing()) menuPopup.dismiss();
+    }
+
+    private void showMenu(View anchor) {
+        LinearLayout menu = newMenuBox();
+        final TabManager.TabItem cur = currentTab();
 
         menu.addView(menuRow(IconView.PLUS, "New tab", 0xFF2979FF, v -> {
-            menuPopup.dismiss();
+            dismissMenu();
             createNewTab("");
         }));
         menu.addView(menuRow(IconView.CLOSEALL, "Close all tabs", 0xFFF4511E, v -> {
-            menuPopup.dismiss();
+            dismissMenu();
             closeAllTabs();
         }));
         menu.addView(menuRow(IconView.DOWNLOAD, "Downloads", 0xFF0F9D58, v -> {
-            menuPopup.dismiss();
+            dismissMenu();
             try {
                 startActivity(new Intent(DownloadManager.ACTION_VIEW_DOWNLOADS));
             } catch (Exception e) {
@@ -978,7 +1221,7 @@ public class MainActivity extends AppCompatActivity {
             }
         }));
         menu.addView(menuRow(IconView.DOWNLOAD, "Download this page", 0xFF00ACC1, v -> {
-            menuPopup.dismiss();
+            dismissMenu();
             TabManager.TabItem t = currentTab();
             if (t == null || t.url.isEmpty()) {
                 toast("Pehle koi page kholo");
@@ -987,11 +1230,22 @@ public class MainActivity extends AppCompatActivity {
             }
         }));
         menu.addView(menuRow(IconView.INSTALL, "Install & create shortcut", 0xFF7C4DFF, v -> {
-            menuPopup.dismiss();
+            dismissMenu();
             startInstallFlow();
         }));
+        menu.addView(menuRow(IconView.PIN, "Pin this tab to home screen", 0xFFE91E63, v -> {
+            dismissMenu();
+            pinTab(currentTab());
+        }));
 
-        // Zoom row
+        // Desktop site (per tab)
+        final boolean desktop = cur != null && desktopTabs.contains(cur);
+        menu.addView(menuCheckRow(IconView.DESKTOP, "Desktop site", 0xFF455A64, desktop, v -> {
+            dismissMenu();
+            toggleDesktop(currentTab());
+        }));
+
+        // Page zoom row (per site, whole page like Chrome)
         LinearLayout zoom = new LinearLayout(this);
         zoom.setOrientation(LinearLayout.HORIZONTAL);
         zoom.setGravity(Gravity.CENTER_VERTICAL);
@@ -1004,7 +1258,8 @@ public class MainActivity extends AppCompatActivity {
         zl.setPadding(dp(16), 0, 0, 0);
         zoom.addView(zl, new LinearLayout.LayoutParams(0, WRAP, 1f));
         final TextView zv = new TextView(this);
-        zv.setText(currentZoomLevel + "%");
+        int shownZoom = (cur != null && !cur.url.isEmpty()) ? zoomFor(hostOf(cur.url)) : 100;
+        zv.setText(shownZoom + "%");
         zv.setTextSize(15);
         zv.setGravity(Gravity.CENTER);
         zv.setTextColor(0xFF202124);
@@ -1012,17 +1267,11 @@ public class MainActivity extends AppCompatActivity {
         IconView minus = new IconView(this, IconView.MINUS, INK);
         minus.setPadding(dp(8), dp(8), dp(8), dp(8));
         minus.setBackground(ripple(true));
-        minus.setOnClickListener(v -> {
-            changeZoom(-25);
-            zv.setText(currentZoomLevel + "%");
-        });
+        minus.setOnClickListener(v -> changeSiteZoom(-1, zv));
         IconView plusZ = new IconView(this, IconView.PLUS, INK);
         plusZ.setPadding(dp(8), dp(8), dp(8), dp(8));
         plusZ.setBackground(ripple(true));
-        plusZ.setOnClickListener(v -> {
-            changeZoom(25);
-            zv.setText(currentZoomLevel + "%");
-        });
+        plusZ.setOnClickListener(v -> changeSiteZoom(1, zv));
         zoom.addView(minus, new LinearLayout.LayoutParams(dp(36), dp(36)));
         zoom.addView(zv, new LinearLayout.LayoutParams(dp(52), WRAP));
         zoom.addView(plusZ, new LinearLayout.LayoutParams(dp(36), dp(36)));
@@ -1034,14 +1283,30 @@ public class MainActivity extends AppCompatActivity {
         dlp.setMargins(dp(16), dp(4), dp(16), dp(4));
         menu.addView(div, dlp);
 
-        menu.addView(menuRow(IconView.TRASH, "Clear cookies & data", 0xFFD93025, v -> {
-            menuPopup.dismiss();
+        menu.addView(menuRow(IconView.TRASH, "Clear all cookies & data", 0xFFD93025, v -> {
+            dismissMenu();
             confirmClearData();
         }));
 
-        menuPopup = new PopupWindow(wrapper, dp(290), WRAP, true);
-        menuPopup.setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
-        menuPopup.showAsDropDown(anchor, anchor.getWidth() - dp(290) + dp(8), -anchor.getHeight() + dp(4));
+        openPopup(anchor, menu, 300, true);
+    }
+
+    private void showTabMenu(View anchor, final TabManager.TabItem tab) {
+        LinearLayout menu = newMenuBox();
+        menu.addView(menuRow(IconView.PIN, "Pin to home screen", 0xFFE91E63, v -> {
+            dismissMenu();
+            pinTab(tab);
+        }));
+        menu.addView(menuRow(IconView.TRASH, "Clear this site's data & cookies", 0xFFD93025, v -> {
+            dismissMenu();
+            clearSiteData(tab);
+        }));
+        menu.addView(menuRow(IconView.CLOSE, "Close tab", 0xFF455A64, v -> {
+            dismissMenu();
+            int idx = tabManager.getTabs().indexOf(tab);
+            if (idx >= 0) closeTab(idx);
+        }));
+        openPopup(anchor, menu, 290, false);
     }
 
     private View menuRow(int icon, String label, int color, View.OnClickListener l) {
@@ -1062,20 +1327,76 @@ public class MainActivity extends AppCompatActivity {
         return r;
     }
 
-    private void changeZoom(int delta) {
-        int z = currentZoomLevel + delta;
-        if (z < 50) z = 50;
-        if (z > 200) z = 200;
-        currentZoomLevel = z;
-        for (TabManager.TabItem t : tabManager.getTabs()) {
-            if (t.webView != null) t.webView.getSettings().setTextZoom(currentZoomLevel);
+    private View menuCheckRow(int icon, String label, int color, boolean checked, View.OnClickListener l) {
+        LinearLayout r = (LinearLayout) menuRow(icon, label, color, l);
+        TextView box = new TextView(this);
+        box.setGravity(Gravity.CENTER);
+        box.setTextSize(14);
+        box.setTypeface(Typeface.DEFAULT_BOLD);
+        if (checked) {
+            box.setText("\u2713");
+            box.setTextColor(Color.WHITE);
+            box.setBackground(roundBg(BLUE, 6, BLUE, 2));
+        } else {
+            box.setBackground(roundBg(Color.TRANSPARENT, 6, 0xFF9AA0A6, 2));
+        }
+        r.addView(box, new LinearLayout.LayoutParams(dp(22), dp(22)));
+        return r;
+    }
+
+    // ------------------------------------------------------------------ page zoom (whole page, per site)
+
+    private int zoomFor(String host) {
+        return prefs.getInt("zoom_" + host, 100);
+    }
+
+    private void applyZoom(WebView v, String url) {
+        if (v == null || url == null || url.isEmpty()) return;
+        int z = zoomFor(hostOf(url));
+        String val = z == 100 ? "" : String.format(Locale.US, "%.2f", z / 100f);
+        v.evaluateJavascript("(function(){var d=document.documentElement;if(d){d.style.zoom='" + val + "';}})();", null);
+    }
+
+    private void changeSiteZoom(int dir, TextView label) {
+        TabManager.TabItem t = currentTab();
+        if (t == null || t.url == null || t.url.isEmpty()) {
+            toast("Pehle koi website kholo");
+            return;
+        }
+        String host = hostOf(t.url);
+        int cur = zoomFor(host);
+        int idx = 0;
+        for (int i = 0; i < ZOOM_STEPS.length; i++) {
+            if (ZOOM_STEPS[i] <= cur) idx = i;
+        }
+        idx = Math.max(0, Math.min(ZOOM_STEPS.length - 1, idx + dir));
+        int z = ZOOM_STEPS[idx];
+        prefs.edit().putInt("zoom_" + host, z).apply();
+        label.setText(z + "%");
+        for (TabManager.TabItem other : tabManager.getTabs()) {
+            if (other.url != null && hostOf(other.url).equals(host)) applyZoom(other.webView, other.url);
         }
     }
+
+    private void toggleDesktop(TabManager.TabItem tab) {
+        if (tab == null || tab.webView == null) return;
+        WebSettings s = tab.webView.getSettings();
+        if (desktopTabs.contains(tab)) {
+            desktopTabs.remove(tab);
+            s.setUserAgentString(mobileUA);
+        } else {
+            desktopTabs.add(tab);
+            s.setUserAgentString(desktopUA);
+        }
+        if (tab.url != null && !tab.url.isEmpty()) tab.webView.reload();
+    }
+
+    // ------------------------------------------------------------------ clear data
 
     private void confirmClearData() {
         new AlertDialog.Builder(this)
                 .setTitle("Clear all data?")
-                .setMessage("Cookies, cache, history aur site data sab delete ho jayega.")
+                .setMessage("Cookies, cache, history aur sab sites ka data delete ho jayega.")
                 .setPositiveButton("Clear", (d, w) -> clearAllDataAndCookies())
                 .setNegativeButton("Cancel", null)
                 .show();
@@ -1093,6 +1414,46 @@ public class MainActivity extends AppCompatActivity {
             }
         }
         toast("All cookies & data cleared!");
+    }
+
+    private void clearSiteData(TabManager.TabItem tab) {
+        if (tab == null || tab.url == null || tab.url.isEmpty()) {
+            toast("Is tab me koi site nahi hai");
+            return;
+        }
+        String host = hostOf(tab.url);
+        if (host.isEmpty()) return;
+        CookieManager cm = CookieManager.getInstance();
+        String ck = cm.getCookie(tab.url);
+        List<String> domains = new ArrayList<>();
+        String h = host;
+        while (h.contains(".")) {
+            domains.add(h);
+            h = h.substring(h.indexOf('.') + 1);
+        }
+        if (ck != null) {
+            for (String part : ck.split(";")) {
+                String name = part.trim();
+                int eq = name.indexOf('=');
+                if (eq > 0) name = name.substring(0, eq);
+                if (name.isEmpty()) continue;
+                cm.setCookie("https://" + host, name + "=; Max-Age=0; Path=/");
+                for (String d : domains) {
+                    cm.setCookie("https://" + host, name + "=; Max-Age=0; Path=/; Domain=" + d);
+                    cm.setCookie("https://" + host, name + "=; Max-Age=0; Path=/; Domain=." + d);
+                }
+            }
+        }
+        cm.flush();
+        WebStorage ws = WebStorage.getInstance();
+        ws.deleteOrigin("https://" + host);
+        ws.deleteOrigin("http://" + host);
+        if (tab.webView != null) {
+            tab.webView.clearCache(true);
+            tab.webView.clearFormData();
+            tab.webView.reload();
+        }
+        toast("Is site ka data & cookies clear ho gaye");
     }
 
     // ------------------------------------------------------------------ tabs
@@ -1118,10 +1479,10 @@ public class MainActivity extends AppCompatActivity {
         return t != null && t.webView == wv;
     }
 
-    private void createNewTab(String url) {
+    private TabManager.TabItem openTab(String url, boolean load) {
         if (tabManager.getTabs().size() >= MAX_TABS) {
             toast("Max " + MAX_TABS + " tabs allowed");
-            return;
+            return null;
         }
         WebView webView = new WebView(this);
         setupWebView(webView);
@@ -1130,12 +1491,20 @@ public class MainActivity extends AppCompatActivity {
         tabManager.addTab(tab);
         tabManager.setActiveTabIdx(tabManager.getTabs().size() - 1);
 
-        if (!url.isEmpty()) webView.loadUrl(url);
+        if (load && !url.isEmpty()) webView.loadUrl(url);
         renderActiveTab();
+        return tab;
+    }
+
+    private void createNewTab(String url) {
+        openTab(url, true);
     }
 
     private void destroyTab(TabManager.TabItem t) {
         thumbs.remove(t);
+        desktopTabs.remove(t);
+        popupTabs.remove(t);
+        lazyTabs.remove(t);
         try {
             if (t.webView != null) {
                 ViewGroup p = (ViewGroup) t.webView.getParent();
@@ -1176,15 +1545,16 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void captureCurrentThumb() {
+        if (webContainer == null) return;
         for (int i = 0; i < webContainer.getChildCount(); i++) {
             View c = webContainer.getChildAt(i);
             if (c instanceof WebView && c.getWidth() > 0 && c.getHeight() > 0) {
                 TabManager.TabItem t = findTab((WebView) c);
                 if (t == null) continue;
                 try {
-                    Bitmap b = Bitmap.createBitmap(c.getWidth() / 2, c.getHeight() / 2, Bitmap.Config.RGB_565);
+                    Bitmap b = Bitmap.createBitmap(c.getWidth() * 4 / 10, c.getHeight() * 4 / 10, Bitmap.Config.RGB_565);
                     Canvas cv = new Canvas(b);
-                    cv.scale(0.5f, 0.5f);
+                    cv.scale(0.4f, 0.4f);
                     c.draw(cv);
                     thumbs.put(t, b);
                 } catch (Throwable ignored) {
@@ -1208,8 +1578,16 @@ public class MainActivity extends AppCompatActivity {
         } else {
             if (tab.webView.getParent() != null) ((ViewGroup) tab.webView.getParent()).removeView(tab.webView);
             webContainer.addView(tab.webView, new FrameLayout.LayoutParams(MATCH, MATCH));
+            tab.webView.setVisibility(View.VISIBLE);
+            try {
+                tab.webView.onResume();
+            } catch (Throwable ignored) {
+            }
+            if (lazyTabs.remove(tab)) tab.webView.loadUrl(tab.url); // restored tab: load on first open
+            tab.webView.requestLayout();
             etSearchUrl.setText(tab.url);
         }
+        refreshTabStrip(true);
     }
 
     private void loadUrlInCurrentTab(String url) {
@@ -1220,19 +1598,29 @@ public class MainActivity extends AppCompatActivity {
         }
         tab.url = url;
         tab.title = url;
+        lazyTabs.remove(tab);
         thumbs.remove(tab);
         tab.webView.loadUrl(url);
         renderActiveTab();
     }
 
+    /** Home never wipes a page tab: it opens (or reuses) a separate empty home tab, like Chrome's new tab. */
     private void navigateHome() {
-        TabManager.TabItem tab = currentTab();
-        if (tab != null) {
-            tab.url = "";
-            tab.title = "New Tab";
-            thumbs.remove(tab);
+        TabManager.TabItem cur = currentTab();
+        if (cur != null && (cur.url == null || cur.url.isEmpty())) {
+            renderActiveTab();
+            return;
         }
-        renderActiveTab();
+        List<TabManager.TabItem> tabs = tabManager.getTabs();
+        for (int i = 0; i < tabs.size(); i++) {
+            String u = tabs.get(i).url;
+            if (u == null || u.isEmpty()) {
+                tabManager.setActiveTabIdx(i);
+                renderActiveTab();
+                return;
+            }
+        }
+        createNewTab("");
     }
 
     private void refreshCurrentTab() {
@@ -1263,12 +1651,17 @@ public class MainActivity extends AppCompatActivity {
         s.setDomStorageEnabled(true);
         s.setDatabaseEnabled(true);
         s.setLoadsImagesAutomatically(true);
-        s.setSupportMultipleWindows(false);
+        s.setSupportMultipleWindows(!appMode);
         s.setJavaScriptCanOpenWindowsAutomatically(true);
+        s.setMediaPlaybackRequiresUserGesture(false);
         s.setMixedContentMode(WebSettings.MIXED_CONTENT_ALWAYS_ALLOW);
+        s.setUseWideViewPort(true);
+        s.setLoadWithOverviewMode(true);
         s.setBuiltInZoomControls(true);
         s.setDisplayZoomControls(false);
-        s.setTextZoom(currentZoomLevel);
+        s.setCacheMode(WebSettings.LOAD_DEFAULT);
+        if (mobileUA != null) s.setUserAgentString(mobileUA);
+        webView.setLayerType(View.LAYER_TYPE_HARDWARE, null);
 
         CookieManager.getInstance().setAcceptCookie(true);
         CookieManager.getInstance().setAcceptThirdPartyCookies(webView, true);
@@ -1304,10 +1697,17 @@ public class MainActivity extends AppCompatActivity {
             }
 
             @Override
+            public void onPageCommitVisible(WebView view, String url) {
+                super.onPageCommitVisible(view, url);
+                applyZoom(view, url);
+            }
+
+            @Override
             public void onPageFinished(WebView view, String url) {
                 super.onPageFinished(view, url);
                 TabManager.TabItem t = findTab(view);
                 if (t != null && !t.url.isEmpty()) t.url = url;
+                applyZoom(view, url);
                 if (isActive(view)) {
                     showProgress(100);
                     if (t != null && !t.url.isEmpty() && etSearchUrl != null && !etSearchUrl.hasFocus()) {
@@ -1316,6 +1716,7 @@ public class MainActivity extends AppCompatActivity {
                 }
                 CookieManager.getInstance().flush();
                 if (appMode && view == appWebView) view.evaluateJavascript(THEME_JS, null);
+                scheduleStripRefresh();
             }
         });
 
@@ -1328,7 +1729,31 @@ public class MainActivity extends AppCompatActivity {
             @Override
             public void onReceivedTitle(WebView view, String title) {
                 TabManager.TabItem t = findTab(view);
-                if (t != null && title != null && !title.isEmpty()) t.title = title;
+                if (t != null && title != null && !title.isEmpty()) {
+                    t.title = title;
+                    scheduleStripRefresh();
+                }
+            }
+
+            @Override
+            public boolean onCreateWindow(WebView view, boolean isDialog, boolean isUserGesture, Message resultMsg) {
+                if (appMode || !isUserGesture) return false; // blocks popup ads
+                TabManager.TabItem nt = openTab("about:blank", false);
+                if (nt == null) return false;
+                popupTabs.add(nt);
+                WebView.WebViewTransport tr = (WebView.WebViewTransport) resultMsg.obj;
+                tr.setWebView(nt.webView);
+                resultMsg.sendToTarget();
+                return true;
+            }
+
+            @Override
+            public void onCloseWindow(WebView window) {
+                TabManager.TabItem t = findTab(window);
+                if (t != null) {
+                    int idx = tabManager.getTabs().indexOf(t);
+                    if (idx >= 0) closeTab(idx);
+                }
             }
 
             @Override
@@ -1424,14 +1849,24 @@ public class MainActivity extends AppCompatActivity {
             super.onBackPressed();
             return;
         }
+        if (menuPopup != null && menuPopup.isShowing()) {
+            menuPopup.dismiss();
+            return;
+        }
         if (tabSwitcher.getVisibility() == View.VISIBLE) {
             hideTabSwitcher();
             return;
         }
         TabManager.TabItem t = currentTab();
-        if (t != null && !t.url.isEmpty() && t.webView != null && t.webView.canGoBack()) {
-            t.webView.goBack();
-            return;
+        if (t != null && !t.url.isEmpty() && t.webView != null) {
+            if (t.webView.canGoBack()) {
+                t.webView.goBack();
+                return;
+            }
+            if (popupTabs.contains(t) && tabManager.getTabs().size() > 1) {
+                closeTab(tabManager.getActiveTabIdx());
+                return;
+            }
         }
         super.onBackPressed();
     }
@@ -1441,7 +1876,7 @@ public class MainActivity extends AppCompatActivity {
     /** Simple vector-style icons drawn with Canvas (no drawable files needed). */
     static class IconView extends View {
         static final int HOME = 0, REFRESH = 1, DOTS = 2, PLUS = 3, CLOSE = 4, MINUS = 5,
-                DOWNLOAD = 6, TRASH = 7, SEARCH = 8, CLOSEALL = 9, INSTALL = 10;
+                DOWNLOAD = 6, TRASH = 7, SEARCH = 8, CLOSEALL = 9, INSTALL = 10, DESKTOP = 11, PIN = 12;
         private final int type;
         private final int color;
         private final Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
@@ -1532,6 +1967,17 @@ public class MainActivity extends AppCompatActivity {
                     c.drawPath(path, p);
                     c.drawLine(10.5f, 18.5f, 13.5f, 18.5f, p);
                     break;
+                case DESKTOP:
+                    c.drawRoundRect(new RectF(3, 4, 21, 16), 2, 2, p);
+                    c.drawLine(8, 20, 16, 20, p);
+                    c.drawLine(12, 16, 12, 20, p);
+                    break;
+                case PIN:
+                    c.drawCircle(12, 9, 5, p);
+                    c.drawLine(12, 14, 12, 21, p);
+                    p.setStyle(Paint.Style.FILL);
+                    c.drawCircle(12, 9, 1.6f, p);
+                    break;
                 case TRASH:
                     c.drawLine(4, 7, 20, 7, p);
                     path.moveTo(6, 7);
@@ -1577,13 +2023,11 @@ public class MainActivity extends AppCompatActivity {
             c.drawRect(0, 0, w, h, p);
             p.setShader(null);
 
-            // sun
             p.setColor(0x66FFF59D);
             c.drawCircle(w * 0.8f, h * 0.28f, 17 * u, p);
             p.setColor(0xFFFFE57F);
             c.drawCircle(w * 0.8f, h * 0.28f, 10 * u, p);
 
-            // back mountains
             Path m = new Path();
             m.moveTo(0, h * 0.85f);
             m.lineTo(w * 0.18f, h * 0.42f);
@@ -1597,7 +2041,6 @@ public class MainActivity extends AppCompatActivity {
             p.setColor(0xFF7FB2FF);
             c.drawPath(m, p);
 
-            // snow caps
             p.setColor(Color.WHITE);
             Path cap = new Path();
             cap.moveTo(w * 0.18f, h * 0.42f);
@@ -1610,13 +2053,11 @@ public class MainActivity extends AppCompatActivity {
             cap.close();
             c.drawPath(cap, p);
 
-            // ground (same colour as page background so it blends)
             p.setColor(BG);
             c.drawRect(0, h * 0.84f, w, h, p);
             c.drawOval(new RectF(-w * 0.1f, h * 0.78f, w * 0.65f, h * 1.15f), p);
             c.drawOval(new RectF(w * 0.45f, h * 0.8f, w * 1.1f, h * 1.15f), p);
 
-            // iceberg
             Path ice = new Path();
             ice.moveTo(w * 0.1f, h * 0.9f);
             ice.lineTo(w * 0.2f, h * 0.55f);
@@ -1634,7 +2075,6 @@ public class MainActivity extends AppCompatActivity {
             p.setColor(0xFF4DD0E1);
             c.drawPath(face, p);
 
-            // penguin
             float cx = w * 0.7f, by = h * 0.9f;
             p.setColor(0xFF263238);
             c.drawOval(new RectF(cx - 10 * u, by - 36 * u, cx + 10 * u, by), p);
@@ -1660,7 +2100,6 @@ public class MainActivity extends AppCompatActivity {
             c.drawOval(new RectF(cx - 8 * u, by - 1.5f * u, cx - 1 * u, by + 1.5f * u), p);
             c.drawOval(new RectF(cx + 1 * u, by - 1.5f * u, cx + 8 * u, by + 1.5f * u), p);
 
-            // snow
             p.setColor(0xFFFFFFFF);
             for (int i = 0; i + 1 < snow.length; i += 2) {
                 c.drawCircle(snow[i] * w, snow[i + 1] * h, (1 + (i % 3)) * u * 0.7f, p);
