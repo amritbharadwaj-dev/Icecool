@@ -34,7 +34,7 @@ public class PrivateActivity extends MainActivity {
         super.onCreate(savedInstanceState);
     }
 
-    /** Fresh private process = fresh data. Removes anything an old private session left on disk. */
+        /** Fresh private process = fresh data. Removes anything an old private session left on disk. */
     private void deleteLeftovers() {
         try {
             File[] files = getDataDir().listFiles();
